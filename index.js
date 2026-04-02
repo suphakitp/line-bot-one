@@ -20,9 +20,9 @@ cloudinary.config({
 });
 
 // ===== MEMORY =====
-const userBuffers = {};
-const userLocations = {};
-const savedImages = new Set(); // กันซ้ำ
+const userBuffers = {};     // เก็บรูป
+const userLocations = {};   // เก็บ location ล่าสุด
+const savedImages = new Set(); // กันรูปซ้ำ
 
 // ===== WEBHOOK =====
 app.post('/webhook', line.middleware(config), async (req, res) => {
@@ -30,14 +30,19 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   res.sendStatus(200);
 });
 
-// ===== 📍 EXTRACT LOCATION (IoT) =====
+// ===== 📍 SMART PARSER (รองรับ IoT หลายแบบ) =====
 function extractLocation(text) {
-  // รองรับ Location A, B, C...
-  const match = text.match(/Location\s*([A-Za-z0-9]+)/i);
-  if (match) {
-    return match[1]; // เช่น A, B
-  }
-  return text; // fallback
+  if (!text) return null;
+
+  // แบบ: Location A, Location B
+  let match = text.match(/Location\s*([A-Za-z0-9]+)/i);
+  if (match) return match[1];
+
+  // fallback: ถ้าพิมพ์สั้นๆ เช่น A หรือ B
+  match = text.match(/^[A-Za-z]$/);
+  if (match) return match[0];
+
+  return null;
 }
 
 // ===== MAIN =====
@@ -52,10 +57,11 @@ async function handleEvent(event) {
     if (event.message.type === 'image') {
       if (!userBuffers[id]) userBuffers[id] = [];
       userBuffers[id].push(event.message.id);
+      console.log('📸 Image received:', event.message.id);
       return null;
     }
 
-    // ===== 📝 ข้อความ =====
+    // ===== 📝 รับข้อความ =====
     if (event.message.type === 'text') {
       const text = event.message.text.trim();
 
@@ -63,15 +69,16 @@ async function handleEvent(event) {
       if (text === 'บันทึกรูปภาพ' || text === 'บันทึกรูป') {
 
         const images = userBuffers[id] || [];
-        const location = userLocations[id] || 'ไม่ระบุ';
-        const dateStr = new Date().toISOString().split('T')[0];
 
-        if (images.length === 0) {
+        if (!images || images.length === 0) {
           return client.replyMessage(event.replyToken, {
             type: 'text',
             text: 'ไม่มีรูปให้บันทึก'
           });
         }
+
+        const location = userLocations[id] || 'ไม่ระบุ';
+        const dateStr = new Date().toISOString().split('T')[0];
 
         let savedCount = 0;
 
@@ -91,9 +98,13 @@ async function handleEvent(event) {
         });
       }
 
-      // ===== 📍 เก็บ location (รองรับ IoT) =====
-      userLocations[id] = extractLocation(text);
-      return null;
+      // ===== 📍 parse location (IoT + manual) =====
+      const loc = extractLocation(text);
+
+      if (loc) {
+        userLocations[id] = loc;
+        console.log('📍 Location detected:', loc);
+      }
     }
   }
 
@@ -118,7 +129,7 @@ async function saveImage(messageId, location, dateStr) {
       },
       (error, result) => {
         if (error) return reject(error);
-        console.log('Uploaded:', result.secure_url);
+        console.log('✅ Uploaded:', result.secure_url);
         resolve(result);
       }
     ).end(buffer);
@@ -127,5 +138,5 @@ async function saveImage(messageId, location, dateStr) {
 
 // ===== START =====
 app.listen(process.env.PORT || 3000, () => {
-  console.log('Server running...');
+  console.log('🚀 Server running...');
 });
