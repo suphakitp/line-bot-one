@@ -10,7 +10,6 @@ const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
 };
-
 const client = new line.Client(config);
 
 cloudinary.config({
@@ -20,9 +19,7 @@ cloudinary.config({
 });
 
 // ===== MEMORY =====
-const groupState = {};
-const usedMessageIds = new Set();
-const saveTimeouts = {};
+const groupState = {}; // { groupId: { buffer: [], pending: [] } }
 
 // ===== WEBHOOK =====
 app.post('/webhook', line.middleware(config), async (req, res) => {
@@ -40,9 +37,7 @@ function extractLocation(text) {
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  if (/^[a-z]$/i.test(text)) {
-    return text.toUpperCase();
-  }
+  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
 
   return null;
 }
@@ -56,74 +51,80 @@ async function handleEvent(event) {
 
   if (!groupState[groupId]) {
     groupState[groupId] = {
-      location: null,
-      buffer: []
+      buffer: [],
+      pending: []
     };
   }
 
   const state = groupState[groupId];
 
+  // ===== IMAGE =====
+  if (event.message.type === 'image') {
+    const item = {
+      id: event.message.id,
+      timestamp: event.timestamp,
+      location: null
+    };
+
+    state.buffer.push(item);
+    state.pending.push(item); // รอ location
+
+    return null;
+  }
+
   // ===== TEXT =====
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
 
-    // 📍 จับ location (เงียบ)
+    // 📍 LOCATION
     const loc = extractLocation(text);
     if (loc) {
-      state.location = loc;
+      for (let item of state.pending) {
+        item.location = loc;
+      }
+      state.pending = [];
       return null;
     }
 
-    // 💾 บันทึกรูป
+    // 💾 SAVE
     if (text === 'บันทึกรูปภาพ') {
-      if (!state.location) {
-        return reply(event.replyToken, '❌ ยังไม่มี location');
-      }
 
-      if (saveTimeouts[groupId]) {
-        clearTimeout(saveTimeouts[groupId]);
-      }
+      let count = 0;
+      const summary = {}; // 🔥 สรุปผล
 
-      saveTimeouts[groupId] = setTimeout(async () => {
-        if (state.buffer.length === 0) {
-          await reply(event.replyToken, '❌ ไม่มีรูปให้บันทึก');
-          return;
-        }
+      for (let item of state.buffer) {
 
-        const dateStr = new Date().toISOString().split('T')[0];
-        let count = 0;
+        if (!item.location) continue;
 
-        for (let id of state.buffer) {
-          if (usedMessageIds.has(id)) continue;
+        const date = new Date(item.timestamp);
+        const dateStr = date.toISOString().split('T')[0];
 
-          await saveImage(id, state.location, dateStr);
-          usedMessageIds.add(id);
+        const res = await saveImage(item.id, item.location, dateStr);
+
+        if (res) {
           count++;
+
+          const key = `${item.location}/${dateStr}`;
+          if (!summary[key]) summary[key] = 0;
+          summary[key]++;
         }
+      }
 
-        state.buffer = [];
+      // ===== สร้างข้อความสรุป =====
+      let textReply = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
-        await reply(
-          event.replyToken,
-          `✅ บันทึกแล้ว ${count} รูป\n📁 ${state.location}/${dateStr}`
-        );
+      for (let key in summary) {
+        textReply += `📁 ${key} → ${summary[key]} รูป\n`;
+      }
 
-      }, 2000); // ⏳ รอ 2 วิ
-
-      return null;
+      return reply(event.replyToken, textReply);
     }
-  }
-
-  // ===== IMAGE =====
-  if (event.message.type === 'image') {
-    state.buffer.push(event.message.id);
-    return null; // เงียบ
   }
 
   return null;
 }
 
-// ===== SAVE =====
+// ===== SAVE (กันซ้ำ) =====
 async function saveImage(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
@@ -137,11 +138,18 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        folder: `${location}/${dateStr}`
+        folder: `${location}/${dateStr}`,
+        public_id: messageId, // กันซ้ำ
+        overwrite: false
       },
       (err, result) => {
-        if (err) return reject(err);
-        console.log('Uploaded:', result.secure_url);
+        if (err) {
+          if (err.message && err.message.includes('already exists')) {
+            return resolve(null); // ข้ามรูปซ้ำ
+          }
+          return reject(err);
+        }
+
         resolve(result);
       }
     ).end(buffer);
