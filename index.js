@@ -7,16 +7,16 @@ const app = express();
 
 // ===== CONFIG =====
 const config = {
-  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.CHANNEL_SECRET
+  channelAccessToken: "wdDtLLdV3GVXalnmW928fdc9H5NFjFPARA9+iWD1MeqCH1t1R2KNmJPMQiYPMYh/0yTbmvBkbkZGB2PrN2HKcDO2iI7koUNJc6nBcxTcMPv/Zdl7Q77h9405dtVjXvYIWiS82f5K0gaYyD+EsN4b/wdB04t89/1O/w1cDnyilFU=",
+  channelSecret: "cJ5RstkSdLthTpvZYmtfIdbWhwE"
 };
 
 const client = new line.Client(config);
 
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  cloud_name: "dyq0intl6",
+  api_key: "843765847354289",
+  api_secret: "89431474f227989b785d5ddd526fad26"
 });
 
 // ===== MEMORY =====
