@@ -18,8 +18,8 @@ cloudinary.config({
   api_secret: process.env.API_SECRET
 });
 
-// ===== MEMORY =====
-const groupState = {}; // { groupId: { buffer: [], pending: [] } }
+// ===== MEMORY (สะสมข้ามวัน) =====
+const groupState = {};
 
 // ===== WEBHOOK =====
 app.post('/webhook', line.middleware(config), async (req, res) => {
@@ -51,8 +51,8 @@ async function handleEvent(event) {
 
   if (!groupState[groupId]) {
     groupState[groupId] = {
-      buffer: [],
-      pending: []
+      buffer: [],   // เก็บทั้งหมด
+      pending: []   // รูปที่ยังไม่มี location
     };
   }
 
@@ -67,7 +67,7 @@ async function handleEvent(event) {
     };
 
     state.buffer.push(item);
-    state.pending.push(item); // รอ location
+    state.pending.push(item);
 
     return null;
   }
@@ -86,11 +86,11 @@ async function handleEvent(event) {
       return null;
     }
 
-    // 💾 SAVE
+    // 💾 SAVE (กดทีเดียวจบทั้งหมด)
     if (text === 'บันทึกรูปภาพ') {
 
       let count = 0;
-      const summary = {}; // 🔥 สรุปผล
+      const summary = {};
 
       for (let item of state.buffer) {
 
@@ -110,21 +110,25 @@ async function handleEvent(event) {
         }
       }
 
-      // ===== สร้างข้อความสรุป =====
-      let textReply = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
+      // 🔥 ปิดรอบ = ล้างทั้งหมด
+      state.buffer = [];
+      state.pending = [];
+
+      // ===== สรุป =====
+      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
-        textReply += `📁 ${key} → ${summary[key]} รูป\n`;
+        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
 
-      return reply(event.replyToken, textReply);
+      return reply(event.replyToken, replyText);
     }
   }
 
   return null;
 }
 
-// ===== SAVE (กันซ้ำ) =====
+// ===== SAVE (กันซ้ำถาวร) =====
 async function saveImage(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
