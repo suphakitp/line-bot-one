@@ -1,10 +1,14 @@
-const express = require('express');
-const line = require('@line/bot-sdk');
-const cloudinary = require('cloudinary').v2;
+require("dotenv").config();
+
+const express = require("express");
+const line = require("@line/bot-sdk");
+const mongoose = require("mongoose");
+const cloudinary = require("cloudinary").v2;
+const Redis = require("ioredis");
 
 const app = express();
 
-// ===== LINE CONFIG =====
+/* ================= CONFIG ================= */
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -12,131 +16,173 @@ const config = {
 
 const client = new line.Client(config);
 
-// ===== CLOUDINARY CONFIG =====
-cloudinary.config({
-  cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.API_KEY,
-  api_secret: process.env.API_SECRET
+/* ================= DB ================= */
+mongoose.connect(process.env.MONGO_URI);
+
+const Image = mongoose.model("Image", {
+  messageId: { type: String, unique: true },
+  imageUrl: String,
+  location: String,
+  date: String,
+  createdAt: { type: Date, default: Date.now }
 });
 
-// ===== MEMORY =====
-const userBuffers = {};     // เก็บรูป
-const userLocations = {};   // เก็บ location ล่าสุด
-const savedImages = new Set(); // กันรูปซ้ำ
+/* ================= REDIS ================= */
+const redis = new Redis(process.env.REDIS_URL);
 
-// ===== WEBHOOK =====
-app.post('/webhook', line.middleware(config), async (req, res) => {
-  await Promise.all(req.body.events.map(handleEvent));
+/* ================= CLOUDINARY ================= */
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_KEY,
+  api_secret: process.env.CLOUD_SECRET
+});
+
+/* ================= UTIL ================= */
+function getToday() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function keyImages(gid) {
+  return `images:${gid}`;
+}
+
+function keyLocations(gid) {
+  return `locations:${gid}`;
+}
+
+/* ================= WEBHOOK ================= */
+app.post("/webhook", line.middleware(config), async (req, res) => {
+  const events = req.body.events;
+
+  await Promise.all(events.map(handleEvent));
+
   res.sendStatus(200);
 });
 
-// ===== 📍 SMART PARSER (รองรับ IoT หลายแบบ) =====
-function extractLocation(text) {
-  if (!text) return null;
-
-  // แบบ: Location A, Location B
-  let match = text.match(/Location\s*([A-Za-z0-9]+)/i);
-  if (match) return match[1];
-
-  // fallback: ถ้าพิมพ์สั้นๆ เช่น A หรือ B
-  match = text.match(/^[A-Za-z]$/);
-  if (match) return match[0];
-
-  return null;
-}
-
-// ===== MAIN =====
+/* ================= CORE ================= */
 async function handleEvent(event) {
-  const source = event.source;
-  const id = source.userId || source.groupId;
-  if (!id) return null;
+  if (event.type !== "message") return;
 
-  if (event.type === 'message') {
+  const gid = event.source.groupId || event.source.userId;
 
-    // ===== 📸 รับรูป =====
-    if (event.message.type === 'image') {
-      if (!userBuffers[id]) userBuffers[id] = [];
-      userBuffers[id].push(event.message.id);
-      console.log('📸 Image received:', event.message.id);
-      return null;
-    }
+  /* ========= IMAGE ========= */
+  if (event.message.type === "image") {
+    const messageId = event.message.id;
 
-    // ===== 📝 รับข้อความ =====
-    if (event.message.type === 'text') {
-      const text = event.message.text.trim();
+    // กันซ้ำ
+    const exists = await Image.findOne({ messageId });
+    if (exists) return;
 
-      // ===== 💾 คำสั่งบันทึก =====
-      if (text === 'บันทึกรูปภาพ' || text === 'บันทึกรูป') {
+    const stream = await client.getMessageContent(messageId);
 
-        const images = userBuffers[id] || [];
+    const upload = cloudinary.uploader.upload_stream(
+      { folder: "temp" },
+      async (err, result) => {
+        if (err) return console.error(err);
 
-        if (!images || images.length === 0) {
-          return client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: 'ไม่มีรูปให้บันทึก'
-          });
+        const data = JSON.stringify({
+          messageId,
+          url: result.secure_url
+        });
+
+        // 🔥 push เข้า queue
+        await redis.rpush(keyImages(gid), data);
+
+        console.log("📸 image queued");
+
+        await tryMatch(gid);
+      }
+    );
+
+    stream.pipe(upload);
+  }
+
+  /* ========= TEXT ========= */
+  if (event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    /* ===== SUMMARY ===== */
+    if (text === "สรุป") {
+      const today = getToday();
+
+      const result = await Image.aggregate([
+        { $match: { date: today } },
+        {
+          $group: {
+            _id: "$location",
+            count: { $sum: 1 }
+          }
         }
+      ]);
 
-        const location = userLocations[id] || 'ไม่ระบุ';
-        const dateStr = new Date().toISOString().split('T')[0];
+      let msg = `📊 สรุป (${today})\n`;
 
-        let savedCount = 0;
-
-        for (let imgId of images) {
-          if (savedImages.has(imgId)) continue;
-
-          await saveImage(imgId, location, dateStr);
-          savedImages.add(imgId);
-          savedCount++;
-        }
-
-        userBuffers[id] = [];
-
-        return client.replyMessage(event.replyToken, {
-          type: 'text',
-          text: `บันทึกรูปภาพแล้ว (${savedCount} รูป) จาก ${location}`
+      if (result.length === 0) {
+        msg += "ไม่มีข้อมูล";
+      } else {
+        result.forEach(r => {
+          msg += `Location ${r._id}: ${r.count} รูป\n`;
         });
       }
 
-      // ===== 📍 parse location (IoT + manual) =====
-      const loc = extractLocation(text);
-
-      if (loc) {
-        userLocations[id] = loc;
-        console.log('📍 Location detected:', loc);
-      }
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: msg
+      });
     }
-  }
 
-  return null;
+    /* ===== LOCATION ===== */
+    let location = null;
+
+    if (text.includes("A")) location = "A";
+    if (text.includes("B")) location = "B";
+
+    if (!location) return;
+
+    // 🔥 push location
+    await redis.rpush(keyLocations(gid), location);
+
+    console.log("📍 location queued");
+
+    await tryMatch(gid);
+  }
 }
 
-// ===== 📤 SAVE IMAGE =====
-async function saveImage(messageId, location, dateStr) {
-  const stream = await client.getMessageContent(messageId);
+/* ================= MATCH ENGINE ================= */
+async function tryMatch(gid) {
+  while (true) {
+    const imageData = await redis.lpop(keyImages(gid));
+    const location = await redis.lpop(keyLocations(gid));
 
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk);
+    if (!imageData || !location) {
+      // ❗ ถ้าไม่ครบ ต้องคืนกลับ
+      if (imageData) await redis.lpush(keyImages(gid), imageData);
+      if (location) await redis.lpush(keyLocations(gid), location);
+      break;
+    }
+
+    const image = JSON.parse(imageData);
+
+    // กันซ้ำ DB
+    const exists = await Image.findOne({ messageId: image.messageId });
+    if (exists) continue;
+
+    const folder = `${location}/${getToday()}`;
+
+    // ย้ายรูปเข้า folder จริง
+    const finalUrl = image.url.replace("/upload/", `/upload/${folder}/`);
+
+    await Image.create({
+      messageId: image.messageId,
+      imageUrl: finalUrl,
+      location,
+      date: getToday()
+    });
+
+    console.log(`✅ saved ${location}`);
   }
-
-  const buffer = Buffer.concat(chunks);
-
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
-      {
-        folder: `${location}/${dateStr}`
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        console.log('✅ Uploaded:', result.secure_url);
-        resolve(result);
-      }
-    ).end(buffer);
-  });
 }
 
-// ===== START =====
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running...');
-});
+/* ================= SERVER ================= */
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log("🚀 Running"));
