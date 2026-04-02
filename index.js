@@ -6,7 +6,7 @@ const cloudinary = require('cloudinary').v2;
 
 const app = express();
 
-// ===== CONFIG (ใช้ ENV เท่านั้น) =====
+// ===== CONFIG =====
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -24,14 +24,14 @@ cloudinary.config({
 const groupState = {};
 const usedMessageIds = new Set();
 
-// ===== WEBHOOK (กัน 500) =====
+// ===== WEBHOOK =====
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
     res.status(200).end();
   } catch (err) {
     console.error('Webhook Error:', err);
-    res.status(200).end(); // ❗ LINE ต้องได้ 200 เท่านั้น
+    res.status(200).end();
   }
 });
 
@@ -46,8 +46,7 @@ async function handleEvent(event) {
     if (!groupState[groupId]) {
       groupState[groupId] = {
         location: null,
-        buffer: [],
-        waiting: false
+        buffer: []
       };
     }
 
@@ -57,7 +56,7 @@ async function handleEvent(event) {
     if (event.message.type === 'text') {
       const text = event.message.text.trim();
 
-      // 📍 ตั้ง location
+      // 📍 location
       if (text.toLowerCase().startsWith('location:')) {
         const loc = text.split(':')[1]?.trim();
 
@@ -69,22 +68,14 @@ async function handleEvent(event) {
         return reply(event.replyToken, `📍 ตั้ง location = ${loc}`);
       }
 
-      // 📸 เริ่ม
+      // 💾 บันทึก
       if (text === 'บันทึกรูปภาพ') {
         if (!state.location) {
           return reply(event.replyToken, '❌ กรุณาตั้ง location ก่อน');
         }
 
-        state.buffer = [];
-        state.waiting = true;
-
-        return reply(event.replyToken, '📸 ส่งรูปมาได้เลย');
-      }
-
-      // 💾 บันทึก
-      if (text === 'ยืนยันบันทึก') {
         if (state.buffer.length === 0) {
-          return reply(event.replyToken, '❌ ไม่มีรูป');
+          return reply(event.replyToken, '❌ ไม่มีรูปให้บันทึก');
         }
 
         const dateStr = new Date().toISOString().split('T')[0];
@@ -99,7 +90,6 @@ async function handleEvent(event) {
         }
 
         state.buffer = [];
-        state.waiting = false;
 
         return reply(
           event.replyToken,
@@ -108,15 +98,14 @@ async function handleEvent(event) {
       }
     }
 
-    // ===== IMAGE =====
+    // ===== IMAGE (รับรูปทันที ไม่ต้องรอคำสั่ง) =====
     if (event.message.type === 'image') {
-      if (!state.waiting) {
-        return reply(event.replyToken, '❌ พิมพ์ "บันทึกรูปภาพ" ก่อน');
-      }
-
       state.buffer.push(event.message.id);
 
-      return reply(event.replyToken, `📥 รับรูปแล้ว (${state.buffer.length})`);
+      return reply(
+        event.replyToken,
+        `📥 รับรูปแล้ว (${state.buffer.length})`
+      );
     }
 
     return null;
@@ -127,7 +116,7 @@ async function handleEvent(event) {
   }
 }
 
-// ===== SAVE IMAGE =====
+// ===== SAVE =====
 async function saveImage(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
