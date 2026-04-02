@@ -1,12 +1,10 @@
-require('dotenv').config();
-
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cloudinary = require('cloudinary').v2;
 
 const app = express();
 
-// ===== CONFIG =====
+// ===== LINE CONFIG =====
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -14,109 +12,95 @@ const config = {
 
 const client = new line.Client(config);
 
+// ===== CLOUDINARY CONFIG =====
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.API_KEY,
+  api_secret: process.env.API_SECRET
 });
 
 // ===== MEMORY =====
-const groupState = {};
-const usedMessageIds = new Set();
+const userBuffers = {};
+const userLocations = {};
+const savedImages = new Set(); // กันซ้ำ
 
 // ===== WEBHOOK =====
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  try {
-    await Promise.all(req.body.events.map(handleEvent));
-    res.status(200).end();
-  } catch (err) {
-    console.error('Webhook Error:', err);
-    res.status(200).end();
-  }
+  await Promise.all(req.body.events.map(handleEvent));
+  res.sendStatus(200);
 });
+
+// ===== 📍 EXTRACT LOCATION (IoT) =====
+function extractLocation(text) {
+  // รองรับ Location A, B, C...
+  const match = text.match(/Location\s*([A-Za-z0-9]+)/i);
+  if (match) {
+    return match[1]; // เช่น A, B
+  }
+  return text; // fallback
+}
 
 // ===== MAIN =====
 async function handleEvent(event) {
-  try {
-    if (event.type !== 'message') return null;
+  const source = event.source;
+  const id = source.userId || source.groupId;
+  if (!id) return null;
 
-    const groupId = event.source.groupId || event.source.roomId;
-    if (!groupId) return null;
+  if (event.type === 'message') {
 
-    if (!groupState[groupId]) {
-      groupState[groupId] = {
-        location: null,
-        buffer: []
-      };
+    // ===== 📸 รับรูป =====
+    if (event.message.type === 'image') {
+      if (!userBuffers[id]) userBuffers[id] = [];
+      userBuffers[id].push(event.message.id);
+      return null;
     }
 
-    const state = groupState[groupId];
-
-    // ===== TEXT =====
+    // ===== 📝 ข้อความ =====
     if (event.message.type === 'text') {
       const text = event.message.text.trim();
 
-      // 📍 รองรับ location: xxx
-      if (text.toLowerCase().startsWith('location:')) {
-        const loc = text.split(':')[1]?.trim();
-        if (loc) state.location = loc;
-        return null; // ❗ เงียบ
-      }
+      // ===== 💾 คำสั่งบันทึก =====
+      if (text === 'บันทึกรูปภาพ' || text === 'บันทึกรูป') {
 
-      // 📍 รองรับ IoT เช่น "Location A : 11:05 AM"
-      if (text.includes('Location')) {
-        const match = text.match(/Location\s*(.*):/i);
-        if (match && match[1]) {
-          state.location = match[1].trim();
-        }
-        return null; // ❗ เงียบ
-      }
-
-      // 💾 บันทึก
-      if (text === 'บันทึกรูปภาพ') {
-        if (!state.location) {
-          return reply(event.replyToken, '❌ กรุณาตั้ง location ก่อน');
-        }
-
-        if (state.buffer.length === 0) {
-          return reply(event.replyToken, '❌ ไม่มีรูปให้บันทึก');
-        }
-
+        const images = userBuffers[id] || [];
+        const location = userLocations[id] || 'ไม่ระบุ';
         const dateStr = new Date().toISOString().split('T')[0];
-        let count = 0;
 
-        for (let id of state.buffer) {
-          if (usedMessageIds.has(id)) continue;
-
-          await saveImage(id, state.location, dateStr);
-          usedMessageIds.add(id);
-          count++;
+        if (images.length === 0) {
+          return client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: 'ไม่มีรูปให้บันทึก'
+          });
         }
 
-        state.buffer = [];
+        let savedCount = 0;
 
-        return reply(
-          event.replyToken,
-          `✅ บันทึกแล้ว ${count} รูป\n📁 ${state.location}/${dateStr}`
-        );
+        for (let imgId of images) {
+          if (savedImages.has(imgId)) continue;
+
+          await saveImage(imgId, location, dateStr);
+          savedImages.add(imgId);
+          savedCount++;
+        }
+
+        userBuffers[id] = [];
+
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `บันทึกรูปภาพแล้ว (${savedCount} รูป) จาก ${location}`
+        });
       }
+
+      // ===== 📍 เก็บ location (รองรับ IoT) =====
+      userLocations[id] = extractLocation(text);
+      return null;
     }
-
-    // ===== IMAGE =====
-    if (event.message.type === 'image') {
-      state.buffer.push(event.message.id);
-      return null; // ❗ เงียบ
-    }
-
-    return null;
-
-  } catch (err) {
-    console.error('handleEvent error:', err);
-    return null;
   }
+
+  return null;
 }
 
-// ===== SAVE =====
+// ===== 📤 SAVE IMAGE =====
 async function saveImage(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
@@ -132,20 +116,12 @@ async function saveImage(messageId, location, dateStr) {
       {
         folder: `${location}/${dateStr}`
       },
-      (err, result) => {
-        if (err) return reject(err);
+      (error, result) => {
+        if (error) return reject(error);
         console.log('Uploaded:', result.secure_url);
         resolve(result);
       }
     ).end(buffer);
-  });
-}
-
-// ===== REPLY =====
-function reply(token, text) {
-  return client.replyMessage(token, {
-    type: 'text',
-    text
   });
 }
 
