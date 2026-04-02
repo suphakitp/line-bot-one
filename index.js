@@ -4,27 +4,25 @@ const cloudinary = require("cloudinary").v2;
 
 const app = express();
 
-// 🔐 LINE config (ใส่ของคุณ)
+// 🔐 LINE
 const config = {
-  channelAccessToken: "wdDtLLdV3GVXalnmW928fdc9H5NFjFPARA9+iWD1MeqCH1t1R2KNmJPMQiYPMYh/0yTbmvBkbkZGB2PrN2HKcDO2iI7koUNJc6nBcxTcMPv/Zdl7Q77h9405dtVjXvYIWiS82f5K0gaYyD+EsN4b/wdB04t89/1O/w1cDnyilFU=",
-  channelSecret: "89431474f227989b785d5ddd526fad26"
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.CHANNEL_SECRET
 };
 
 const client = new line.Client(config);
 
-// ☁️ Cloudinary config (ใส่ของคุณ)
+// ☁️ Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
   api_key: process.env.API_KEY,
   api_secret: process.env.API_SECRET
 });
 
-// 🧠 เก็บสถานะ
-const userState = {};
-const userBuffers = {};
-const userTimers = {};
+// 🧠 เก็บข้อมูลระดับกลุ่ม
+const groupData = {};
 
-// 🎯 webhook
+// webhook
 app.post("/webhook", line.middleware(config), async (req, res) => {
   await Promise.all(req.body.events.map(handleEvent));
   res.sendStatus(200);
@@ -32,62 +30,71 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 
 // 🎯 handle event
 async function handleEvent(event) {
-  const userId = event.source.userId;
+  if (event.type !== "message") return;
 
-  // 🟡 รับข้อความ = ชื่อสถานที่
-  if (event.type === "message" && event.message.type === "text") {
-    userState[userId] = event.message.text.trim();
+  const groupId = event.source.groupId;
+  if (!groupId) return;
+
+  if (!groupData[groupId]) {
+    groupData[groupId] = {
+      images: [],
+      location: ""
+    };
+  }
+
+  const data = groupData[groupId];
+
+  // 📸 รูป
+  if (event.message.type === "image") {
+    data.images.push(event.message.id);
     return;
   }
 
-  // 🔵 รับรูป
-  if (event.type === "message" && event.message.type === "image") {
-    const site = userState[userId] || "unknown";
+  // 💬 ข้อความ
+  if (event.message.type === "text") {
+    const text = event.message.text.trim();
 
-    if (!userBuffers[userId]) {
-      userBuffers[userId] = [];
-    }
-
-    userBuffers[userId].push({
-      messageId: event.message.id,
-      site
-    });
-
-    // เคลียร์ timer เก่า
-    if (userTimers[userId]) {
-      clearTimeout(userTimers[userId]);
-    }
-
-    // ⏳ รอ 3 วิ (กันส่งหลายรูป)
-    userTimers[userId] = setTimeout(async () => {
-      const images = userBuffers[userId];
-
-      for (const img of images) {
-        await saveImage(img.messageId, img.site);
+    // 👉 สั่งบันทึก
+    if (text === "บันทึกรูปภาพ") {
+      if (data.images.length === 0) {
+        return client.replyMessage(event.replyToken, {
+          type: "text",
+          text: "ไม่มีรูปให้บันทึก"
+        });
       }
 
-      // 💬 ตอบครั้งเดียว
-      await client.pushMessage(userId, {
-        type: "text",
-        text: `บันทึกรูปภาพแล้ว (${images[0].site}) จำนวน ${images.length} รูป`
+      const dateStr = new Date().toLocaleDateString("en-CA", {
+        timeZone: "Asia/Bangkok"
       });
 
-      // ล้าง buffer
-      userBuffers[userId] = [];
-      userTimers[userId] = null;
+      let count = 0;
 
-    }, 3000);
+      for (const id of data.images) {
+        await saveImage(id, data.location || "unknown", dateStr);
+        count++;
+      }
+
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: `บันทึกรูปภาพแล้ว (${data.location}) จำนวน ${count} รูป`
+      });
+
+      // reset
+      groupData[groupId] = {
+        images: [],
+        location: ""
+      };
+
+      return;
+    }
+
+    // 📍 เก็บสถานที่
+    data.location = text;
   }
 }
 
-// ☁️ อัปโหลดรูป
-async function saveImage(messageId, site) {
-  const now = new Date();
-
-  const dateStr = now.toLocaleDateString("en-CA", {
-    timeZone: "Asia/Bangkok"
-  });
-
+// ☁️ upload
+async function saveImage(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
@@ -100,22 +107,18 @@ async function saveImage(messageId, site) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        folder: `${site}/${dateStr}`
+        folder: `${location}/${dateStr}`
       },
-      (error, result) => {
-        if (error) {
-          console.error(error);
-          reject(error);
-        } else {
-          console.log("Uploaded:", result.secure_url);
-          resolve(result);
-        }
+      (err, result) => {
+        if (err) return reject(err);
+        console.log(result.secure_url);
+        resolve(result);
       }
     ).end(buffer);
   });
 }
 
-// 🚀 start server
+// run
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running...");
 });
