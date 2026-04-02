@@ -56,16 +56,20 @@ async function handleEvent(event) {
     if (event.message.type === 'text') {
       const text = event.message.text.trim();
 
-      // 📍 location
+      // 📍 รองรับ location: xxx
       if (text.toLowerCase().startsWith('location:')) {
         const loc = text.split(':')[1]?.trim();
+        if (loc) state.location = loc;
+        return null; // ❗ เงียบ
+      }
 
-        if (!loc) {
-          return reply(event.replyToken, '❌ ใช้ format: location: แปลง A');
+      // 📍 รองรับ IoT เช่น "Location A : 11:05 AM"
+      if (text.includes('Location')) {
+        const match = text.match(/Location\s*(.*):/i);
+        if (match && match[1]) {
+          state.location = match[1].trim();
         }
-
-        state.location = loc;
-        return reply(event.replyToken, `📍 ตั้ง location = ${loc}`);
+        return null; // ❗ เงียบ
       }
 
       // 💾 บันทึก
@@ -98,14 +102,10 @@ async function handleEvent(event) {
       }
     }
 
-    // ===== IMAGE (รับรูปทันที ไม่ต้องรอคำสั่ง) =====
+    // ===== IMAGE =====
     if (event.message.type === 'image') {
       state.buffer.push(event.message.id);
-
-      return reply(
-        event.replyToken,
-        `📥 รับรูปแล้ว (${state.buffer.length})`
-      );
+      return null; // ❗ เงียบ
     }
 
     return null;
