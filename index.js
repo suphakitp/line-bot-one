@@ -1,14 +1,11 @@
-require("dotenv").config();
-
-const express = require("express");
-const line = require("@line/bot-sdk");
-const mongoose = require("mongoose");
-const cloudinary = require("cloudinary").v2;
-const Redis = require("ioredis");
+require('dotenv').config();
+const express = require('express');
+const line = require('@line/bot-sdk');
+const cloudinary = require('cloudinary').v2;
 
 const app = express();
 
-/* ================= CONFIG ================= */
+// ===== CONFIG =====
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -16,173 +13,150 @@ const config = {
 
 const client = new line.Client(config);
 
-/* ================= DB ================= */
-mongoose.connect(process.env.MONGO_URI);
-
-const Image = mongoose.model("Image", {
-  messageId: { type: String, unique: true },
-  imageUrl: String,
-  location: String,
-  date: String,
-  createdAt: { type: Date, default: Date.now }
-});
-
-/* ================= REDIS ================= */
-const redis = new Redis(process.env.REDIS_URL);
-
-/* ================= CLOUDINARY ================= */
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.CLOUD_KEY,
-  api_secret: process.env.CLOUD_SECRET
+  api_key: process.env.API_KEY,
+  api_secret: process.env.API_SECRET
 });
 
-/* ================= UTIL ================= */
-function getToday() {
-  return new Date().toISOString().split("T")[0];
-}
+// ===== MEMORY =====
+const groupState = {};
+const usedMessageIds = new Set();
+const saveTimeouts = {};
 
-function keyImages(gid) {
-  return `images:${gid}`;
-}
-
-function keyLocations(gid) {
-  return `locations:${gid}`;
-}
-
-/* ================= WEBHOOK ================= */
-app.post("/webhook", line.middleware(config), async (req, res) => {
-  const events = req.body.events;
-
-  await Promise.all(events.map(handleEvent));
-
+// ===== WEBHOOK =====
+app.post('/webhook', line.middleware(config), async (req, res) => {
+  await Promise.all(req.body.events.map(handleEvent));
   res.sendStatus(200);
 });
 
-/* ================= CORE ================= */
-async function handleEvent(event) {
-  if (event.type !== "message") return;
+// ===== LOCATION PARSER =====
+function extractLocation(text) {
+  text = text.replace(/[^\w\s:]/g, '').trim();
 
-  const gid = event.source.groupId || event.source.userId;
+  let match = text.match(/location\s*([a-z0-9]+)/i);
+  if (match) return match[1].toUpperCase();
 
-  /* ========= IMAGE ========= */
-  if (event.message.type === "image") {
-    const messageId = event.message.id;
+  match = text.match(/แปลง\s*([a-z0-9]+)/i);
+  if (match) return match[1].toUpperCase();
 
-    // กันซ้ำ
-    const exists = await Image.findOne({ messageId });
-    if (exists) return;
-
-    const stream = await client.getMessageContent(messageId);
-
-    const upload = cloudinary.uploader.upload_stream(
-      { folder: "temp" },
-      async (err, result) => {
-        if (err) return console.error(err);
-
-        const data = JSON.stringify({
-          messageId,
-          url: result.secure_url
-        });
-
-        // 🔥 push เข้า queue
-        await redis.rpush(keyImages(gid), data);
-
-        console.log("📸 image queued");
-
-        await tryMatch(gid);
-      }
-    );
-
-    stream.pipe(upload);
+  if (/^[a-z]$/i.test(text)) {
+    return text.toUpperCase();
   }
 
-  /* ========= TEXT ========= */
-  if (event.message.type === "text") {
+  return null;
+}
+
+// ===== MAIN =====
+async function handleEvent(event) {
+  if (event.type !== 'message') return null;
+
+  const groupId = event.source.groupId || event.source.roomId;
+  if (!groupId) return null;
+
+  if (!groupState[groupId]) {
+    groupState[groupId] = {
+      location: null,
+      buffer: []
+    };
+  }
+
+  const state = groupState[groupId];
+
+  // ===== TEXT =====
+  if (event.message.type === 'text') {
     const text = event.message.text.trim();
 
-    /* ===== SUMMARY ===== */
-    if (text === "สรุป") {
-      const today = getToday();
+    // 📍 จับ location (เงียบ)
+    const loc = extractLocation(text);
+    if (loc) {
+      state.location = loc;
+      return null;
+    }
 
-      const result = await Image.aggregate([
-        { $match: { date: today } },
-        {
-          $group: {
-            _id: "$location",
-            count: { $sum: 1 }
-          }
-        }
-      ]);
-
-      let msg = `📊 สรุป (${today})\n`;
-
-      if (result.length === 0) {
-        msg += "ไม่มีข้อมูล";
-      } else {
-        result.forEach(r => {
-          msg += `Location ${r._id}: ${r.count} รูป\n`;
-        });
+    // 💾 บันทึกรูป
+    if (text === 'บันทึกรูปภาพ') {
+      if (!state.location) {
+        return reply(event.replyToken, '❌ ยังไม่มี location');
       }
 
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: msg
-      });
+      if (saveTimeouts[groupId]) {
+        clearTimeout(saveTimeouts[groupId]);
+      }
+
+      saveTimeouts[groupId] = setTimeout(async () => {
+        if (state.buffer.length === 0) {
+          await reply(event.replyToken, '❌ ไม่มีรูปให้บันทึก');
+          return;
+        }
+
+        const dateStr = new Date().toISOString().split('T')[0];
+        let count = 0;
+
+        for (let id of state.buffer) {
+          if (usedMessageIds.has(id)) continue;
+
+          await saveImage(id, state.location, dateStr);
+          usedMessageIds.add(id);
+          count++;
+        }
+
+        state.buffer = [];
+
+        await reply(
+          event.replyToken,
+          `✅ บันทึกแล้ว ${count} รูป\n📁 ${state.location}/${dateStr}`
+        );
+
+      }, 2000); // ⏳ รอ 2 วิ
+
+      return null;
     }
-
-    /* ===== LOCATION ===== */
-    let location = null;
-
-    if (text.includes("A")) location = "A";
-    if (text.includes("B")) location = "B";
-
-    if (!location) return;
-
-    // 🔥 push location
-    await redis.rpush(keyLocations(gid), location);
-
-    console.log("📍 location queued");
-
-    await tryMatch(gid);
   }
+
+  // ===== IMAGE =====
+  if (event.message.type === 'image') {
+    state.buffer.push(event.message.id);
+    return null; // เงียบ
+  }
+
+  return null;
 }
 
-/* ================= MATCH ENGINE ================= */
-async function tryMatch(gid) {
-  while (true) {
-    const imageData = await redis.lpop(keyImages(gid));
-    const location = await redis.lpop(keyLocations(gid));
+// ===== SAVE =====
+async function saveImage(messageId, location, dateStr) {
+  const stream = await client.getMessageContent(messageId);
 
-    if (!imageData || !location) {
-      // ❗ ถ้าไม่ครบ ต้องคืนกลับ
-      if (imageData) await redis.lpush(keyImages(gid), imageData);
-      if (location) await redis.lpush(keyLocations(gid), location);
-      break;
-    }
-
-    const image = JSON.parse(imageData);
-
-    // กันซ้ำ DB
-    const exists = await Image.findOne({ messageId: image.messageId });
-    if (exists) continue;
-
-    const folder = `${location}/${getToday()}`;
-
-    // ย้ายรูปเข้า folder จริง
-    const finalUrl = image.url.replace("/upload/", `/upload/${folder}/`);
-
-    await Image.create({
-      messageId: image.messageId,
-      imageUrl: finalUrl,
-      location,
-      date: getToday()
-    });
-
-    console.log(`✅ saved ${location}`);
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
   }
+
+  const buffer = Buffer.concat(chunks);
+
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream(
+      {
+        folder: `${location}/${dateStr}`
+      },
+      (err, result) => {
+        if (err) return reject(err);
+        console.log('Uploaded:', result.secure_url);
+        resolve(result);
+      }
+    ).end(buffer);
+  });
 }
 
-/* ================= SERVER ================= */
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log("🚀 Running"));
+// ===== REPLY =====
+function reply(token, text) {
+  return client.replyMessage(token, {
+    type: 'text',
+    text
+  });
+}
+
+// ===== START =====
+app.listen(process.env.PORT || 3000, () => {
+  console.log('Server running...');
+});
