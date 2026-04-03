@@ -22,13 +22,18 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
+/* ================= HEALTH CHECK ================= */
+app.get('/', (req, res) => {
+  res.send('🟢 Bot is running');
+});
+
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
     res.sendStatus(200);
   } catch (err) {
-    console.error(err);
+    console.error("❌ webhook error:", err);
     res.sendStatus(500);
   }
 });
@@ -57,6 +62,8 @@ async function handleEvent(event) {
     event.source.roomId ||
     event.source.userId;
 
+  if (!groupId) return;
+
   if (!groupState[groupId]) {
     groupState[groupId] = { buffer: [], pending: [] };
   }
@@ -65,13 +72,14 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    state.buffer.push({
+    const item = {
       id: event.message.id,
       timestamp: event.timestamp,
       location: null
-    });
+    };
 
-    state.pending.push(state.buffer[state.buffer.length - 1]);
+    state.buffer.push(item);
+    state.pending.push(item);
     return;
   }
 
@@ -79,6 +87,7 @@ async function handleEvent(event) {
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
 
+    // 📍 LOCATION
     const loc = extractLocation(text);
     if (loc) {
       for (let item of state.pending) {
@@ -88,6 +97,7 @@ async function handleEvent(event) {
       return;
     }
 
+    // 💾 SAVE
     if (text === 'บันทึกรูปภาพ') {
       let count = 0;
       const summary = {};
@@ -99,19 +109,27 @@ async function handleEvent(event) {
           .toISOString()
           .split('T')[0];
 
-        const res = await saveImage(item.id, item.location, dateStr);
+        try {
+          const res = await saveImage(item.id, item.location, dateStr);
 
-        if (res) {
-          count++;
-          const key = `${item.location}/${dateStr}`;
-          summary[key] = (summary[key] || 0) + 1;
+          if (res) {
+            count++;
+
+            const key = `${item.location}/${dateStr}`;
+            summary[key] = (summary[key] || 0) + 1;
+          }
+
+        } catch (err) {
+          console.error("❌ save error:", err);
         }
       }
 
+      // reset
       state.buffer = [];
       state.pending = [];
 
       let replyText = `✅ บันทึก ${count} รูป\n\n`;
+
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]}\n`;
       }
@@ -123,6 +141,8 @@ async function handleEvent(event) {
 
 /* ================= SAVE ================= */
 async function saveImage(messageId, location, dateStr) {
+  console.log("⬆️ uploading:", messageId);
+
   const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
@@ -135,13 +155,19 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        // 🔥 FIX ตรงนี้
-        folder: `line_backup/${location}/${dateStr}`,
+        // ✅ กลับไปใช้แบบเดิม (สำคัญ)
+        folder: `${location}/${dateStr}`,
         public_id: messageId,
         overwrite: false
       },
       (err, result) => {
-        if (err) return reject(err);
+        if (err) {
+          if (err.message && err.message.includes('already exists')) {
+            return resolve(null);
+          }
+          return reject(err);
+        }
+
         resolve(result);
       }
     ).end(buffer);
@@ -150,7 +176,13 @@ async function saveImage(messageId, location, dateStr) {
 
 /* ================= REPLY ================= */
 function reply(token, text) {
-  return client.replyMessage(token, { type: 'text', text });
+  return client.replyMessage(token, {
+    type: 'text',
+    text
+  });
 }
 
-app.listen(process.env.PORT || 3000);
+/* ================= START ================= */
+app.listen(process.env.PORT || 3000, () => {
+  console.log('🚀 Server running');
+});
