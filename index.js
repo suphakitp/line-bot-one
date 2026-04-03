@@ -22,25 +22,18 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH CHECK ================= */
-app.get('/', (req, res) => {
-  res.send('🟢 Bot is running');
-});
-
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  console.log("📩 webhook hit");
-
   try {
     await Promise.all(req.body.events.map(handleEvent));
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ webhook error:", err);
+    console.error(err);
     res.sendStatus(500);
   }
 });
 
-/* ================= LOCATION PARSER ================= */
+/* ================= LOCATION ================= */
 function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
 
@@ -59,38 +52,26 @@ function extractLocation(text) {
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
-  console.log("📨 event:", event.message.type);
-
-  // 🔥 รองรับทุกกรณี
   const groupId =
     event.source.groupId ||
     event.source.roomId ||
     event.source.userId;
 
-  if (!groupId) return;
-
   if (!groupState[groupId]) {
-    groupState[groupId] = {
-      buffer: [],
-      pending: []
-    };
+    groupState[groupId] = { buffer: [], pending: [] };
   }
 
   const state = groupState[groupId];
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 image received");
-
-    const item = {
+    state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
       location: null
-    };
+    });
 
-    state.buffer.push(item);
-    state.pending.push(item);
-
+    state.pending.push(state.buffer[state.buffer.length - 1]);
     return;
   }
 
@@ -98,61 +79,41 @@ async function handleEvent(event) {
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
 
-    console.log("💬 text:", text);
-
-    // 📍 LOCATION
     const loc = extractLocation(text);
     if (loc) {
-      console.log("📍 location:", loc);
-
       for (let item of state.pending) {
         item.location = loc;
       }
-
       state.pending = [];
       return;
     }
 
-    // 💾 SAVE
     if (text === 'บันทึกรูปภาพ') {
-
-      console.log("💾 saving...");
-
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
-
         if (!item.location) continue;
 
-        const date = new Date(item.timestamp);
-        const dateStr = date.toISOString().split('T')[0];
+        const dateStr = new Date(item.timestamp)
+          .toISOString()
+          .split('T')[0];
 
-        try {
-          const res = await saveImage(item.id, item.location, dateStr);
+        const res = await saveImage(item.id, item.location, dateStr);
 
-          if (res) {
-            count++;
-
-            const key = `${item.location}/${dateStr}`;
-            if (!summary[key]) summary[key] = 0;
-            summary[key]++;
-          }
-
-        } catch (err) {
-          console.error("❌ save error:", err);
+        if (res) {
+          count++;
+          const key = `${item.location}/${dateStr}`;
+          summary[key] = (summary[key] || 0) + 1;
         }
       }
 
-      // reset
       state.buffer = [];
       state.pending = [];
 
-      // ===== SUMMARY =====
-      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
-
+      let replyText = `✅ บันทึก ${count} รูป\n\n`;
       for (let key in summary) {
-        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
+        replyText += `📁 ${key} → ${summary[key]}\n`;
       }
 
       return reply(event.replyToken, replyText);
@@ -162,8 +123,6 @@ async function handleEvent(event) {
 
 /* ================= SAVE ================= */
 async function saveImage(messageId, location, dateStr) {
-  console.log("⬆️ uploading:", messageId);
-
   const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
@@ -176,18 +135,13 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        folder: `${location}/${dateStr}`,
+        // 🔥 FIX ตรงนี้
+        folder: `line_backup/${location}/${dateStr}`,
         public_id: messageId,
         overwrite: false
       },
       (err, result) => {
-        if (err) {
-          if (err.message && err.message.includes('already exists')) {
-            return resolve(null);
-          }
-          return reject(err);
-        }
-
+        if (err) return reject(err);
         resolve(result);
       }
     ).end(buffer);
@@ -196,13 +150,7 @@ async function saveImage(messageId, location, dateStr) {
 
 /* ================= REPLY ================= */
 function reply(token, text) {
-  return client.replyMessage(token, {
-    type: 'text',
-    text
-  });
+  return client.replyMessage(token, { type: 'text', text });
 }
 
-/* ================= START ================= */
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FIXED version');
-});
+app.listen(process.env.PORT || 3000);
