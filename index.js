@@ -65,8 +65,7 @@ async function handleEvent(event) {
   if (!groupState[groupId]) {
     groupState[groupId] = {
       buffer: [],
-      currentLocation: null, // 🔥 location ปัจจุบัน
-      lastImage: null        // 🔥 รูปล่าสุด
+      currentLocation: null
     };
   }
 
@@ -76,14 +75,12 @@ async function handleEvent(event) {
   if (event.message.type === 'image') {
     console.log("📸 image");
 
-    const item = {
+    // 🔥 ยังไม่ assign location
+    state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation // ใช้ location ล่าสุด
-    };
-
-    state.buffer.push(item);
-    state.lastImage = item;
+      location: null
+    });
 
     return;
   }
@@ -95,21 +92,23 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    // 📍 LOCATION
+    /* ===== LOCATION ===== */
     if (loc) {
-      console.log("📍 set location:", loc);
+      console.log("📍 location:", loc);
 
-      state.currentLocation = loc; // 🔥 ตั้ง location ใหม่
+      state.currentLocation = loc;
 
-      // 🔥 ถ้ามีรูปที่ยังไม่มี location → ใส่ให้ทันที
-      if (state.lastImage && !state.lastImage.location) {
-        state.lastImage.location = loc;
+      // 🔥 assign ให้ "ทุกรูปที่ยังไม่มี location"
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+        }
       }
 
       return;
     }
 
-    // 💾 SAVE
+    /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
@@ -128,7 +127,10 @@ async function handleEvent(event) {
 
           if (res) {
             count++;
+
             const key = `${item.location}/${dateStr}`;
+
+            // 🔥 รวมจำนวน
             summary[key] = (summary[key] || 0) + 1;
           }
 
@@ -139,8 +141,8 @@ async function handleEvent(event) {
 
       // reset
       state.buffer = [];
-      state.lastImage = null;
 
+      // ===== SUMMARY =====
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
@@ -168,7 +170,7 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        folder: `${location}/${dateStr}`, // 🔥 ต้องตรง backup.js
+        folder: `${location}/${dateStr}`, // 🔥 ตรงกับ backup.js
         public_id: messageId,
         overwrite: false
       },
@@ -196,5 +198,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FINAL PRO version');
+  console.log('🚀 Server running FINAL FIXED');
 });
