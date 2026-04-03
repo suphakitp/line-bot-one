@@ -22,7 +22,7 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH CHECK ================= */
+/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
   res.send('🟢 Bot is running');
 });
@@ -62,24 +62,26 @@ async function handleEvent(event) {
     event.source.roomId ||
     event.source.userId;
 
-  if (!groupId) return;
-
   if (!groupState[groupId]) {
-    groupState[groupId] = { buffer: [], pending: [] };
+    groupState[groupId] = {
+      buffer: [],
+      lastLocation: null // 🔥 ใช้ตัวนี้แทน pending
+    };
   }
 
   const state = groupState[groupId];
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
+    console.log("📸 image received");
+
     const item = {
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
+      location: state.lastLocation // 🔥 ใช้ location ล่าสุด
     };
 
     state.buffer.push(item);
-    state.pending.push(item);
     return;
   }
 
@@ -87,22 +89,26 @@ async function handleEvent(event) {
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
 
+    console.log("💬 text:", text);
+
     // 📍 LOCATION
     const loc = extractLocation(text);
     if (loc) {
-      for (let item of state.pending) {
-        item.location = loc;
-      }
-      state.pending = [];
+      console.log("📍 location:", loc);
+      state.lastLocation = loc; // 🔥 จำค่าไว้
       return;
     }
 
     // 💾 SAVE
     if (text === 'บันทึกรูปภาพ') {
+
+      console.log("💾 saving...");
+
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
+
         if (!item.location) continue;
 
         const dateStr = new Date(item.timestamp)
@@ -126,12 +132,11 @@ async function handleEvent(event) {
 
       // reset
       state.buffer = [];
-      state.pending = [];
 
-      let replyText = `✅ บันทึก ${count} รูป\n\n`;
+      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
-        replyText += `📁 ${key} → ${summary[key]}\n`;
+        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
 
       return reply(event.replyToken, replyText);
@@ -155,8 +160,7 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        // ✅ กลับไปใช้แบบเดิม (สำคัญ)
-        folder: `${location}/${dateStr}`,
+        folder: `${location}/${dateStr}`, // 🔥 สำคัญ (ต้องตรง backup.js)
         public_id: messageId,
         overwrite: false
       },
@@ -184,5 +188,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running');
+  console.log('🚀 Server running FINAL version');
 });
