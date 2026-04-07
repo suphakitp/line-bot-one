@@ -1,8 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
-const { google } = require('googleapis');
-const stream = require('stream');
+const cloudinary = require('cloudinary').v2;
 
 const app = express();
 
@@ -13,6 +12,12 @@ const config = {
 };
 
 const client = new line.Client(config);
+
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.API_KEY,
+  api_secret: process.env.API_SECRET
+});
 
 /* ================= MEMORY ================= */
 const groupState = {};
@@ -35,7 +40,7 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
 /* ================= LOCATION ================= */
 function extractLocation(text) {
-  text = text.toLowerCase();
+  text = text.replace(/[^\w\s:]/g, '').trim();
 
   let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
@@ -43,8 +48,7 @@ function extractLocation(text) {
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  match = text.match(/^[a-z]$/i);
-  if (match) return match[0].toUpperCase();
+  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
 
   return null;
 }
@@ -71,6 +75,7 @@ async function handleEvent(event) {
   if (event.message.type === 'image') {
     console.log("📸 image");
 
+    // 🔥 ยังไม่ assign location
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
@@ -87,16 +92,17 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION (ไม่ตอบกลับ) ===== */
+    /* ===== LOCATION ===== */
     if (loc) {
+      console.log("📍 location:", loc);
+
       state.currentLocation = loc;
 
-      const target = [...state.buffer]
-        .reverse()
-        .find(i => !i.location);
-
-      if (target) {
-        target.location = loc;
+      // 🔥 assign ให้ "ทุกรูปที่ยังไม่มี location"
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+        }
       }
 
       return;
@@ -104,18 +110,12 @@ async function handleEvent(event) {
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
-
-      console.log("BUFFER SIZE:", state.buffer.length);
-
-      if (state.buffer.length === 0) {
-        return reply(event.replyToken, '❗ ไม่มีรูปให้บันทึก');
-      }
+      console.log("💾 saving...");
 
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
-
         if (!item.location) continue;
 
         const dateStr = new Date(item.timestamp)
@@ -123,21 +123,14 @@ async function handleEvent(event) {
           .split('T')[0];
 
         try {
-          const folderId = await getOrCreateFolder(
-            item.location,
-            dateStr
-          );
-
-          const res = await saveImage(
-            item.id,
-            folderId,
-            item.location,
-            dateStr
-          );
+          const res = await saveImage(item.id, item.location, dateStr);
 
           if (res) {
             count++;
+
             const key = `${item.location}/${dateStr}`;
+
+            // 🔥 รวมจำนวน
             summary[key] = (summary[key] || 0) + 1;
           }
 
@@ -146,10 +139,10 @@ async function handleEvent(event) {
         }
       }
 
-      /* 🔥 reset หลังบันทึก */
+      // reset
       state.buffer = [];
-      state.currentLocation = null;
 
+      // ===== SUMMARY =====
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
@@ -161,79 +154,38 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= GOOGLE AUTH ================= */
-function getAuth() {
-  return new google.auth.JWT(
-    process.env.GOOGLE_CLIENT_EMAIL,
-    null,
-    process.env.GOOGLE_PRIVATE_KEY,
-    ['https://www.googleapis.com/auth/drive']
-  );
-}
+/* ================= SAVE ================= */
+async function saveImage(messageId, location, dateStr) {
+  console.log("⬆️ upload:", messageId, location);
 
-/* ================= CREATE FOLDER ================= */
-async function getOrCreateFolder(location, dateStr) {
-  const auth = getAuth();
-  await auth.authorize();
-
-  const drive = google.drive({ version: 'v3', auth });
-
-  const folderName = `${location}/${dateStr}`;
-
-  const res = await drive.files.list({
-    q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
-    fields: 'files(id, name)'
-  });
-
-  if (res.data.files.length > 0) {
-    return res.data.files[0].id;
-  }
-
-  const folder = await drive.files.create({
-    requestBody: {
-      name: folderName,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: [process.env.GOOGLE_FOLDER_ID]
-    }
-  });
-
-  return folder.data.id;
-}
-
-/* ================= SAVE IMAGE ================= */
-async function saveImage(messageId, folderId, location, dateStr) {
-  console.log("⬆️ upload:", messageId);
-
-  const streamData = await client.getMessageContent(messageId);
+  const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
-  for await (const chunk of streamData) {
+  for await (const chunk of stream) {
     chunks.push(chunk);
   }
 
   const buffer = Buffer.concat(chunks);
 
-  const auth = getAuth();
-  await auth.authorize();
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream(
+      {
+        folder: `${location}/${dateStr}`, // 🔥 ตรงกับ backup.js
+        public_id: messageId,
+        overwrite: false
+      },
+      (err, result) => {
+        if (err) {
+          if (err.message && err.message.includes('already exists')) {
+            return resolve(null);
+          }
+          return reject(err);
+        }
 
-  const drive = google.drive({ version: 'v3', auth });
-
-  const fileName = `${location}_${dateStr}_${messageId}.jpg`;
-
-  const res = await drive.files.create({
-    requestBody: {
-      name: fileName,
-      parents: [folderId]
-    },
-    media: {
-      mimeType: 'image/jpeg',
-      body: stream.Readable.from(buffer)
-    }
+        resolve(result);
+      }
+    ).end(buffer);
   });
-
-  console.log("✅ upload success:", fileName);
-
-  return res.data;
 }
 
 /* ================= REPLY ================= */
@@ -246,5 +198,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY FINAL (MULTI IMAGE OK)');
+  console.log('🚀 Server running FINAL FIXED');
 });
