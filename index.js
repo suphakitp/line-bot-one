@@ -14,16 +14,18 @@ const config = {
 
 const client = new line.Client(config);
 
-/* ================= GOOGLE AUTH ================= */
-// ปรับปรุงการดึง Private Key ให้รองรับหลายรูปแบบ
-const privateKey = process.env.GOOGLE_PRIVATE_KEY 
-  ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '') 
-  : null;
+/* ================= GOOGLE AUTH (FIXED) ================= */
+// ฟังก์ชันจัดการ Private Key ให้รองรับรูปแบบ \n จาก Environment Variables
+let rawKey = process.env.GOOGLE_PRIVATE_KEY;
+if (rawKey) {
+  rawKey = rawKey.replace(/"/g, ''); // ลบฟันหนูถ้ามี
+  rawKey = rawKey.split('\\n').join('\n'); // แปลงตัวอักษร \n เป็นการขึ้นบรรทัดใหม่จริง
+}
 
 const auth = new google.auth.JWT(
   process.env.GOOGLE_CLIENT_EMAIL,
   null,
-  privateKey,
+  rawKey,
   ['https://www.googleapis.com/auth/drive']
 );
 
@@ -34,7 +36,7 @@ const groupState = {};
 
 /* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot Google Drive (Fixed Logic) is running');
+  res.send('🟢 Bot Google Drive Final Fixed is running');
 });
 
 /* ================= WEBHOOK ================= */
@@ -50,18 +52,12 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
 /* ================= LOCATION PARSER ================= */
 function extractLocation(text) {
-  // ลบอักขระพิเศษออก
   const cleanText = text.replace(/[^\w\sก-๙:]/g, '').trim();
-
   let match = cleanText.match(/location\s*([a-z0-9ก-๙]+)/i);
   if (match) return match[1].toUpperCase();
-
   match = cleanText.match(/แปลง\s*([a-z0-9ก-๙]+)/i);
   if (match) return match[1].toUpperCase();
-
-  // ถ้าพิมพ์แค่ตัวอักษรเดียว หรือตัวเลขเดียว (เช่น A, B, 1)
   if (/^[a-z0-9ก-๙]$/i.test(cleanText)) return cleanText.toUpperCase();
-
   return null;
 }
 
@@ -70,21 +66,19 @@ async function handleEvent(event) {
   if (event.type !== 'message') return;
 
   const groupId = event.source.groupId || event.source.roomId || event.source.userId;
-
   if (!groupState[groupId]) {
     groupState[groupId] = { buffer: [], currentLocation: null };
   }
-
   const state = groupState[groupId];
 
-  /* ===== 1. รับรูปภาพ (เก็บลง Buffer) ===== */
+  /* ===== 1. รับรูปภาพ (เข้าคิว) ===== */
   if (event.message.type === 'image') {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation // ถ้ามี Location ค้างไว้จะใส่ให้เลย
+      location: state.currentLocation // ถ้าเซตไว้ก่อนแล้วก็ดึงมาใช้เลย
     });
-    console.log(`📸 เพิ่มรูปภาพลงในคิว (รวม: ${state.buffer.length} รูป)`);
+    console.log(`📸 Added image to queue (Total: ${state.buffer.length})`);
     return;
   }
 
@@ -93,39 +87,31 @@ async function handleEvent(event) {
     const text = event.message.text.trim();
     const loc = extractLocation(text);
 
-    /* --- ถ้าเป็นการพิมพ์ระบุสถานที่ --- */
+    /* --- พิมพ์ชื่อสถานที่ (A, B, แปลง 1) --- */
     if (loc) {
       state.currentLocation = loc;
-      let updateCount = 0;
-      
-      // วนลูปแปะ Location ให้กับรูปที่ยังไม่มี
+      let updatedCount = 0;
       state.buffer.forEach(item => {
         if (!item.location) {
           item.location = loc;
-          updateCount++;
+          updatedCount++;
         }
       });
-
-      console.log(`📍 ระบุสถานที่: ${loc}`);
-      return reply(event.replyToken, `📍 ระบุสถานที่: ${loc}\n(อัปเดตให้กับรูปเดิม ${updateCount} รูป)`);
+      return reply(event.replyToken, `📍 ระบุสถานที่: ${loc}\n(อัปเดตให้รูปเดิม ${updatedCount} รูป)`);
     }
 
-    /* --- ถ้าสั่ง "บันทึกรูปภาพ" --- */
+    /* --- พิมพ์ "บันทึกรูปภาพ" --- */
     if (text === 'บันทึกรูปภาพ') {
       const readyToSave = state.buffer.filter(item => item.location !== null);
 
-      if (state.buffer.length === 0) {
-        return reply(event.replyToken, "❌ ยังไม่มีรูปภาพในคิวครับ");
-      }
+      if (state.buffer.length === 0) return reply(event.replyToken, "❌ ไม่มีรูปในคิว");
+      if (readyToSave.length === 0) return reply(event.replyToken, "⚠️ กรุณาพิมพ์ระบุสถานที่ก่อนบันทึก");
 
-      if (readyToSave.length === 0) {
-        return reply(event.replyToken, "⚠️ รูปในคิวยังไม่มีสถานที่กำกับ\nกรุณาพิมพ์ชื่อ Location ก่อนครับ");
-      }
-
+      // ส่งข้อความแจ้งผู้ใช้เบื้องต้น
       await reply(event.replyToken, `💾 กำลังบันทึก ${readyToSave.length} รูป... กรุณารอสักครู่`);
 
       let successCount = 0;
-      let failError = null;
+      let hasError = false;
 
       for (let item of readyToSave) {
         const dateStr = new Date(item.timestamp).toISOString().split('T')[0];
@@ -134,19 +120,20 @@ async function handleEvent(event) {
           successCount++;
         } catch (err) {
           console.error("❌ Save Error:", err.message);
-          failError = err.message;
+          hasError = true;
         }
       }
 
-      // เคลียร์รูปที่บันทึกสำเร็จออก
+      // เคลียร์รูปภาพที่ถูกจัดการไปแล้ว
       state.buffer = state.buffer.filter(item => !readyToSave.includes(item));
 
       let resultMsg = `✅ บันทึกสำเร็จ ${successCount} รูป`;
-      if (failError) {
-        resultMsg += `\n❌ ผิดพลาด: ${failError}\n(ลองเช็คว่าแชร์โฟลเดอร์ให้บอทหรือยัง)`;
+      if (hasError) {
+        resultMsg += `\n❌ มีบางรูปพลาด (โปรดเช็คการแชร์ Folder หรือสิทธิ์ Google Drive)`;
       }
-
-      return reply(event.replyToken, resultMsg);
+      
+      // ส่ง Push Message สรุป (หรือใช้ Reply ถ้า Token ยังไม่หมดอายุ)
+      return client.pushMessage(groupId, { type: 'text', text: resultMsg });
     }
   }
 }
@@ -185,4 +172,4 @@ function reply(token, text) {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server is ready on port ${PORT}`));
