@@ -42,7 +42,6 @@ function extractLocation(text) {
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // รับ A เดี่ยว ๆ
   match = text.match(/^[a-z]$/i);
   if (match) return match[0].toUpperCase();
 
@@ -130,7 +129,6 @@ async function handleEvent(event) {
         }
       }
 
-      // reset
       state.buffer = [];
       state.currentLocation = null;
 
@@ -158,12 +156,15 @@ async function saveImage(messageId, location, dateStr) {
 
   const buffer = Buffer.concat(chunks);
 
+  /* 🔥 FIX AUTH COMPLETE */
   const auth = new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
     null,
     process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
     ['https://www.googleapis.com/auth/drive']
   );
+
+  await auth.authorize(); // ✅ สำคัญมาก
 
   const drive = google.drive({ version: 'v3', auth });
 
@@ -179,6 +180,8 @@ async function saveImage(messageId, location, dateStr) {
       body: require('stream').Readable.from(buffer)
     }
   });
+
+  console.log("✅ upload success:", fileName);
 
   return res.data;
 }
