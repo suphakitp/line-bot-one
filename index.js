@@ -155,6 +155,10 @@ async function handleEvent(event) {
 
 /* ================= GOOGLE AUTH ================= */
 function getAuth() {
+  console.log("EMAIL:", process.env.GOOGLE_CLIENT_EMAIL);
+  console.log("KEY START:", process.env.GOOGLE_PRIVATE_KEY.slice(0, 30));
+  console.log("KEY END:", process.env.GOOGLE_PRIVATE_KEY.slice(-30));
+
   return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
     null,
