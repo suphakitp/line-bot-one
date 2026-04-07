@@ -38,17 +38,21 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION ================= */
+/* ================= LOCATION (อัปเกรดแล้ว) ================= */
 function extractLocation(text) {
-  text = text.replace(/[^\w\s:]/g, '').trim();
+  text = text.toLowerCase();
 
+  // location A
   let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
+  // แปลง A
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
+  // 🔥 หา A จากข้อความยาว เช่น "Location A : 11:05"
+  match = text.match(/\b([a-z])\b/i);
+  if (match) return match[1].toUpperCase();
 
   return null;
 }
@@ -78,8 +82,7 @@ async function handleEvent(event) {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      // 🔥 ถ้ามี location ล่าสุด → ใส่เลย
-      location: state.currentLocation || null
+      location: state.currentLocation || null // 🔥 รองรับส่ง location ก่อน
     });
 
     return;
@@ -98,7 +101,6 @@ async function handleEvent(event) {
 
       state.currentLocation = loc;
 
-      // assign ให้รูปที่ยังไม่มี location
       for (let item of state.buffer) {
         if (!item.location) {
           item.location = loc;
@@ -139,7 +141,7 @@ async function handleEvent(event) {
 
       // reset
       state.buffer = [];
-      state.currentLocation = null; // 🔥 กันหลง location เก่า
+      state.currentLocation = null;
 
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
