@@ -161,14 +161,17 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= GOOGLE AUTH (JSON VERSION) ================= */
+/* ================= GOOGLE AUTH (FIX NEWLINE) ================= */
 function getAuth() {
   const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+
+  // 🔥 FIX สำคัญที่สุด
+  const fixedKey = credentials.private_key.replace(/\\n/g, '\n');
 
   return new google.auth.JWT(
     credentials.client_email,
     null,
-    credentials.private_key,
+    fixedKey,
     ['https://www.googleapis.com/auth/drive']
   );
 }
@@ -248,5 +251,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY JSON FINAL');
+  console.log('🚀 BOT READY FINAL 100%');
 });
