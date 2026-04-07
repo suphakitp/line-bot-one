@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
-const cloudinary = require('cloudinary').v2;
+const { google } = require('googleapis');
 
 const app = express();
 
@@ -12,12 +12,6 @@ const config = {
 };
 
 const client = new line.Client(config);
-
-cloudinary.config({
-  cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.API_KEY,
-  api_secret: process.env.API_SECRET
-});
 
 /* ================= MEMORY ================= */
 const groupState = {};
@@ -38,19 +32,17 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION (อัปเกรดแล้ว) ================= */
+/* ================= LOCATION ================= */
 function extractLocation(text) {
   text = text.toLowerCase();
 
-  // location A
   let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // แปลง A
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // 🔥 หา A จากข้อความยาว เช่น "Location A : 11:05"
+  // 🔥 รองรับข้อความยาว เช่น "Location A : 11:05"
   match = text.match(/\b([a-z])\b/i);
   if (match) return match[1].toUpperCase();
 
@@ -82,7 +74,7 @@ async function handleEvent(event) {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation || null // 🔥 รองรับส่ง location ก่อน
+      location: state.currentLocation || null
     });
 
     return;
@@ -129,7 +121,6 @@ async function handleEvent(event) {
 
           if (res) {
             count++;
-
             const key = `${item.location}/${dateStr}`;
             summary[key] = (summary[key] || 0) + 1;
           }
@@ -154,9 +145,9 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE ================= */
+/* ================= SAVE (Google Drive) ================= */
 async function saveImage(messageId, location, dateStr) {
-  console.log("⬆️ upload:", messageId, location);
+  console.log("⬆️ upload to drive:", messageId, location);
 
   const stream = await client.getMessageContent(messageId);
 
@@ -167,25 +158,29 @@ async function saveImage(messageId, location, dateStr) {
 
   const buffer = Buffer.concat(chunks);
 
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
-      {
-        folder: `${location}/${dateStr}`,
-        public_id: messageId,
-        overwrite: false
-      },
-      (err, result) => {
-        if (err) {
-          if (err.message && err.message.includes('already exists')) {
-            return resolve(null);
-          }
-          return reject(err);
-        }
+  const auth = new google.auth.JWT(
+    process.env.GOOGLE_CLIENT_EMAIL,
+    null,
+    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    ['https://www.googleapis.com/auth/drive']
+  );
 
-        resolve(result);
-      }
-    ).end(buffer);
+  const drive = google.drive({ version: 'v3', auth });
+
+  const fileName = `${location}_${dateStr}_${messageId}.jpg`;
+
+  const res = await drive.files.create({
+    requestBody: {
+      name: fileName,
+      parents: [process.env.GOOGLE_FOLDER_ID]
+    },
+    media: {
+      mimeType: 'image/jpeg',
+      body: require('stream').Readable.from(buffer)
+    }
   });
+
+  return res.data;
 }
 
 /* ================= REPLY ================= */
@@ -198,5 +193,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FINAL FIXED');
+  console.log('🚀 Server running GOOGLE DRIVE VERSION');
 });
