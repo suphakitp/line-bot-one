@@ -91,7 +91,6 @@ async function handleEvent(event) {
     if (loc) {
       state.currentLocation = loc;
 
-      // 🔥 ใส่ location ให้รูปทั้งหมด
       for (let item of state.buffer) {
         if (!item.location) {
           item.location = loc;
@@ -162,16 +161,14 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= GOOGLE AUTH ================= */
+/* ================= GOOGLE AUTH (JSON VERSION) ================= */
 function getAuth() {
-  console.log("EMAIL:", process.env.GOOGLE_CLIENT_EMAIL);
-  console.log("KEY START:", process.env.GOOGLE_PRIVATE_KEY?.slice(0, 30));
-  console.log("KEY END:", process.env.GOOGLE_PRIVATE_KEY?.slice(-30));
+  const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
   return new google.auth.JWT(
-    process.env.GOOGLE_CLIENT_EMAIL,
+    credentials.client_email,
     null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    credentials.private_key,
     ['https://www.googleapis.com/auth/drive']
   );
 }
@@ -251,5 +248,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY FINAL ALL-IN');
+  console.log('🚀 BOT READY JSON FINAL');
 });
