@@ -87,27 +87,29 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION (ไม่ตอบกลับแล้ว) ===== */
+    /* ===== SET LOCATION (ไม่ตอบกลับ) ===== */
     if (loc) {
       state.currentLocation = loc;
 
-      for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-        }
+      const target = [...state.buffer]
+        .reverse()
+        .find(i => !i.location);
+
+      if (target) {
+        target.location = loc;
       }
 
-      return; // ❌ ไม่ reply
+      return;
     }
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
 
+      console.log("BUFFER SIZE:", state.buffer.length);
+
       if (state.buffer.length === 0) {
         return reply(event.replyToken, '❗ ไม่มีรูปให้บันทึก');
       }
-
-      console.log("💾 saving...");
 
       let count = 0;
       const summary = {};
@@ -144,6 +146,7 @@ async function handleEvent(event) {
         }
       }
 
+      /* 🔥 reset หลังบันทึก */
       state.buffer = [];
       state.currentLocation = null;
 
@@ -158,7 +161,7 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= GOOGLE AUTH (FINAL FIX) ================= */
+/* ================= GOOGLE AUTH ================= */
 function getAuth() {
   return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
@@ -243,5 +246,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY FINAL FIX');
+  console.log('🚀 BOT READY FINAL (MULTI IMAGE OK)');
 });
