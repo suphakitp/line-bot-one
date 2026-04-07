@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { google } = require('googleapis');
+const stream = require('stream');
 
 const app = express();
 
@@ -68,12 +69,17 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
+
+    if (!state.currentLocation) {
+      return reply(event.replyToken, '❗ กรุณาพิมพ์ Location ก่อนส่งรูป');
+    }
+
     console.log("📸 image");
 
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation || null
+      location: state.currentLocation
     });
 
     return;
@@ -86,37 +92,41 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    /* ===== LOCATION ===== */
+    /* ===== SET LOCATION ===== */
     if (loc) {
-      console.log("📍 location:", loc);
-
       state.currentLocation = loc;
-
-      for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-        }
-      }
-
-      return;
+      return reply(event.replyToken, `📍 ตั้ง Location = ${loc}`);
     }
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
+
+      if (state.buffer.length === 0) {
+        return reply(event.replyToken, '❗ ไม่มีรูปให้บันทึก');
+      }
+
       console.log("💾 saving...");
 
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
-        if (!item.location) continue;
-
         const dateStr = new Date(item.timestamp)
           .toISOString()
           .split('T')[0];
 
         try {
-          const res = await saveImage(item.id, item.location, dateStr);
+          const folderId = await getOrCreateFolder(
+            item.location,
+            dateStr
+          );
+
+          const res = await saveImage(
+            item.id,
+            folderId,
+            item.location,
+            dateStr
+          );
 
           if (res) {
             count++;
@@ -143,28 +153,62 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE TO GOOGLE DRIVE ================= */
-async function saveImage(messageId, location, dateStr) {
-  console.log("⬆️ upload to drive:", messageId, location);
-
-  const stream = await client.getMessageContent(messageId);
-
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-
-  const buffer = Buffer.concat(chunks);
-
-  /* 🔥 FIX AUTH COMPLETE */
-  const auth = new google.auth.JWT(
+/* ================= GOOGLE AUTH ================= */
+function getAuth() {
+  return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
     null,
     process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
     ['https://www.googleapis.com/auth/drive']
   );
+}
 
-  await auth.authorize(); // ✅ สำคัญมาก
+/* ================= CREATE FOLDER ================= */
+async function getOrCreateFolder(location, dateStr) {
+  const auth = getAuth();
+  await auth.authorize();
+
+  const drive = google.drive({ version: 'v3', auth });
+
+  const folderName = `${location}/${dateStr}`;
+
+  // ค้นหา folder ก่อน
+  const res = await drive.files.list({
+    q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
+    fields: 'files(id, name)'
+  });
+
+  if (res.data.files.length > 0) {
+    return res.data.files[0].id;
+  }
+
+  // สร้างใหม่
+  const folder = await drive.files.create({
+    requestBody: {
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [process.env.GOOGLE_FOLDER_ID]
+    }
+  });
+
+  return folder.data.id;
+}
+
+/* ================= SAVE IMAGE ================= */
+async function saveImage(messageId, folderId, location, dateStr) {
+  console.log("⬆️ upload:", messageId);
+
+  const streamData = await client.getMessageContent(messageId);
+
+  const chunks = [];
+  for await (const chunk of streamData) {
+    chunks.push(chunk);
+  }
+
+  const buffer = Buffer.concat(chunks);
+
+  const auth = getAuth();
+  await auth.authorize();
 
   const drive = google.drive({ version: 'v3', auth });
 
@@ -173,11 +217,11 @@ async function saveImage(messageId, location, dateStr) {
   const res = await drive.files.create({
     requestBody: {
       name: fileName,
-      parents: [process.env.GOOGLE_FOLDER_ID]
+      parents: [folderId]
     },
     media: {
       mimeType: 'image/jpeg',
-      body: require('stream').Readable.from(buffer)
+      body: stream.Readable.from(buffer)
     }
   });
 
@@ -196,5 +240,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running GOOGLE DRIVE FINAL');
+  console.log('🚀 BOT READY (FINAL)');
 });
