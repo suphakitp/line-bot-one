@@ -75,11 +75,11 @@ async function handleEvent(event) {
   if (event.message.type === 'image') {
     console.log("📸 image");
 
-    // 🔥 ยังไม่ assign location
+    // ✅ ใช้ location ณ ตอนนั้นเลย (สำคัญที่สุด)
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
+      location: state.currentLocation
     });
 
     return;
@@ -95,16 +95,7 @@ async function handleEvent(event) {
     /* ===== LOCATION ===== */
     if (loc) {
       console.log("📍 location:", loc);
-
       state.currentLocation = loc;
-
-      // 🔥 assign ให้ "ทุกรูปที่ยังไม่มี location"
-      for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-        }
-      }
-
       return;
     }
 
@@ -112,11 +103,14 @@ async function handleEvent(event) {
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
+      // 🔥 กัน LINE event มาช้า
+      await new Promise(r => setTimeout(r, 1500));
+
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
-        if (!item.location) continue;
+        if (!item.location) continue; // ❌ ไม่มี location = ไม่บันทึก
 
         const dateStr = new Date(item.timestamp)
           .toISOString()
@@ -129,8 +123,6 @@ async function handleEvent(event) {
             count++;
 
             const key = `${item.location}/${dateStr}`;
-
-            // 🔥 รวมจำนวน
             summary[key] = (summary[key] || 0) + 1;
           }
 
@@ -170,7 +162,7 @@ async function saveImage(messageId, location, dateStr) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
-        folder: `${location}/${dateStr}`, // 🔥 ตรงกับ backup.js
+        folder: `${location}/${dateStr}`,
         public_id: messageId,
         overwrite: false
       },
@@ -198,5 +190,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FINAL FIXED');
+  console.log('🚀 Server running FINAL');
 });
