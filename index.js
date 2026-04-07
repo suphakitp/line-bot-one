@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
-const cloudinary = require('cloudinary').v2;
+const { google } = require('googleapis');
 
 const app = express();
 
@@ -13,29 +13,23 @@ const config = {
 
 const client = new line.Client(config);
 
-cloudinary.config({
-  google_client_email: process.env.GOOGLE_CLIENT_EMAIL,
-  google_folder_id: process.env.GOOGLE_FOLDER_ID,
-  google_private_key: process.env.GOOGLE_PRIVATE_KEY
-});
+/* ================= GOOGLE AUTH ================= */
+const auth = new google.auth.JWT(
+  process.env.GOOGLE_CLIENT_EMAIL,
+  null,
+  process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  ['https://www.googleapis.com/auth/drive']
+);
+
+const drive = google.drive({ version: 'v3', auth });
 
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH ================= */
-app.get('/', (req, res) => {
-  res.send('🟢 Bot is running');
-});
-
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  try {
-    await Promise.all(req.body.events.map(handleEvent));
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ webhook error:", err);
-    res.sendStatus(500);
-  }
+  await Promise.all(req.body.events.map(handleEvent));
+  res.sendStatus(200);
 });
 
 /* ================= LOCATION ================= */
@@ -43,9 +37,6 @@ function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
 
   let match = text.match(/location\s*([a-z0-9]+)/i);
-  if (match) return match[1].toUpperCase();
-
-  match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
   if (/^[a-z]$/i.test(text)) return text.toUpperCase();
@@ -73,83 +64,51 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 image");
-
-    // ✅ ใช้ location ณ ตอนนั้นเลย (สำคัญที่สุด)
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
       location: state.currentLocation
     });
-
     return;
   }
 
   /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    console.log("💬", text);
 
     const loc = extractLocation(text);
 
-    /* ===== LOCATION ===== */
     if (loc) {
-      console.log("📍 location:", loc);
       state.currentLocation = loc;
       return;
     }
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
-      console.log("💾 saving...");
-
-      // 🔥 กัน LINE event มาช้า
       await new Promise(r => setTimeout(r, 1500));
 
       let count = 0;
-      const summary = {};
 
       for (let item of state.buffer) {
-        if (!item.location) continue; // ❌ ไม่มี location = ไม่บันทึก
+        if (!item.location) continue;
 
         const dateStr = new Date(item.timestamp)
           .toISOString()
           .split('T')[0];
 
-        try {
-          const res = await saveImage(item.id, item.location, dateStr);
-
-          if (res) {
-            count++;
-
-            const key = `${item.location}/${dateStr}`;
-            summary[key] = (summary[key] || 0) + 1;
-          }
-
-        } catch (err) {
-          console.error("❌ save error:", err);
-        }
+        await saveToDrive(item.id, item.location, dateStr);
+        count++;
       }
 
-      // reset
       state.buffer = [];
 
-      // ===== SUMMARY =====
-      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
-
-      for (let key in summary) {
-        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
-      }
-
-      return reply(event.replyToken, replyText);
+      return reply(event.replyToken, `✅ บันทึก ${count} รูป`);
     }
   }
 }
 
-/* ================= SAVE ================= */
-async function saveImage(messageId, location, dateStr) {
-  console.log("⬆️ upload:", messageId, location);
-
+/* ================= SAVE TO DRIVE ================= */
+async function saveToDrive(messageId, location, dateStr) {
   const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
@@ -159,25 +118,23 @@ async function saveImage(messageId, location, dateStr) {
 
   const buffer = Buffer.concat(chunks);
 
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
-      {
-        folder: `${location}/${dateStr}`,
-        public_id: messageId,
-        overwrite: false
-      },
-      (err, result) => {
-        if (err) {
-          if (err.message && err.message.includes('already exists')) {
-            return resolve(null);
-          }
-          return reject(err);
-        }
+  const fileMetadata = {
+    name: `${messageId}.jpg`,
+    parents: [process.env.GOOGLE_FOLDER_ID]
+  };
 
-        resolve(result);
-      }
-    ).end(buffer);
+  const media = {
+    mimeType: 'image/jpeg',
+    body: Buffer.from(buffer)
+  };
+
+  await drive.files.create({
+    resource: fileMetadata,
+    media: media,
+    fields: 'id'
   });
+
+  console.log("✅ uploaded to drive:", messageId);
 }
 
 /* ================= REPLY ================= */
@@ -189,6 +146,4 @@ function reply(token, text) {
 }
 
 /* ================= START ================= */
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FINAL');
-});
+app.listen(process.env.PORT || 3000);
