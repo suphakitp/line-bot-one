@@ -14,9 +14,9 @@ const config = {
 const client = new line.Client(config);
 
 cloudinary.config({
-  cloud_name: process.env.CLOUD_NAME,
-  api_key: process.env.API_KEY,
-  api_secret: process.env.API_SECRET
+  google_client_email: process.env.GOOGLE_CLIENT_EMAIL,
+  google_folder_id: process.env.GOOGLE_FOLDER_ID,
+  google_private_key: process.env.GOOGLE_PRIVATE_KEY
 });
 
 /* ================= MEMORY ================= */
