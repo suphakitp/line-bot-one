@@ -29,7 +29,7 @@ const groupState = {};
 
 /* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot is running');
+  res.send('🟢 Bot Google Drive is running');
 });
 
 /* ================= WEBHOOK ================= */
@@ -43,11 +43,14 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION ================= */
+/* ================= LOCATION PARSER ================= */
 function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
 
   let match = text.match(/location\s*([a-z0-9]+)/i);
+  if (match) return match[1].toUpperCase();
+
+  match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
   if (/^[a-z]$/i.test(text)) return text.toUpperCase();
@@ -55,15 +58,13 @@ function extractLocation(text) {
   return null;
 }
 
-/* ================= MAIN ================= */
+/* ================= MAIN LOGIC ================= */
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
-  const groupId =
-    event.source.groupId ||
-    event.source.roomId ||
-    event.source.userId;
+  const groupId = event.source.groupId || event.source.roomId || event.source.userId;
 
+  // สร้างสถานะเริ่มต้นของกลุ่มถ้ายังไม่มี
   if (!groupState[groupId]) {
     groupState[groupId] = {
       buffer: [],
@@ -73,66 +74,75 @@ async function handleEvent(event) {
 
   const state = groupState[groupId];
 
-  /* ===== IMAGE ===== */
+  /* ===== 1. รับรูปภาพ ===== */
   if (event.message.type === 'image') {
-    console.log("📸 image");
+    console.log("📸 Image received and added to buffer");
 
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation
+      location: null // ยังไม่มี Location ในตอนแรก
     });
-
     return;
   }
 
-  /* ===== TEXT ===== */
+  /* ===== 2. รับข้อความ ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    console.log("💬", text);
-
     const loc = extractLocation(text);
 
-    /* ===== LOCATION ===== */
+    /* --- พิมพ์ชื่อสถานที่ --- */
     if (loc) {
-      console.log("📍 location:", loc);
+      console.log("📍 Location identified:", loc);
       state.currentLocation = loc;
-      return;
-    }
 
-    /* ===== SAVE ===== */
-    if (text === 'บันทึกรูปภาพ') {
-      console.log("💾 saving...");
-
-      // 🔥 กัน event มาช้า
-      await new Promise(r => setTimeout(r, 1500));
-
-      let count = 0;
-      const summary = {};
-
+      // 🔥 หัวใจสำคัญ: เอา Location ล่าสุดไปแปะให้ทุกรูปที่ค้างอยู่ใน Buffer
+      let updatedCount = 0;
       for (let item of state.buffer) {
-        if (!item.location) continue;
-
-        const dateStr = new Date(item.timestamp)
-          .toISOString()
-          .split('T')[0];
-
-        try {
-          await saveToDrive(item.id, item.location, dateStr);
-
-          count++;
-          const key = `${item.location}/${dateStr}`;
-          summary[key] = (summary[key] || 0) + 1;
-
-        } catch (err) {
-          console.error("❌ save error:", err);
+        if (!item.location) {
+          item.location = loc;
+          updatedCount++;
         }
       }
 
-      state.buffer = [];
+      return reply(event.replyToken, `📍 ระบุสถานที่: ${loc}\n(อัปเดตให้กับ ${updatedCount} รูปในคิว)`);
+    }
 
-      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
+    /* --- พิมพ์ "บันทึกรูปภาพ" --- */
+    if (text === 'บันทึกรูปภาพ') {
+      if (state.buffer.length === 0) {
+        return reply(event.replyToken, "❌ ยังไม่มีรูปภาพในคิว");
+      }
 
+      // เช็คว่ามีรูปไหนที่ยังไม่มี location บ้าง
+      const readyToSave = state.buffer.filter(item => item.location !== null);
+      
+      if (readyToSave.length === 0) {
+        return reply(event.replyToken, "⚠️ รูปในคิวยังไม่ได้ระบุสถานที่\nกรุณาพิมพ์ชื่อ Location ก่อนบันทึก");
+      }
+
+      console.log("💾 Starting upload to Google Drive...");
+      let count = 0;
+      const summary = {};
+
+      for (let item of readyToSave) {
+        const dateStr = new Date(item.timestamp).toISOString().split('T')[0];
+
+        try {
+          await saveToDrive(item.id, item.location, dateStr);
+          count++;
+          
+          const key = `${item.location}/${dateStr}`;
+          summary[key] = (summary[key] || 0) + 1;
+        } catch (err) {
+          console.error("❌ Save error for image", item.id, ":", err);
+        }
+      }
+
+      // ลบรูปที่บันทึกสำเร็จแล้วออกจาก Buffer
+      state.buffer = state.buffer.filter(item => item.location === null);
+
+      let replyText = `✅ บันทึกสำเร็จทั้งหมด ${count} รูป\n\n`;
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
@@ -142,26 +152,23 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE TO DRIVE ================= */
+/* ================= GOOGLE DRIVE UPLOAD ================= */
 async function saveToDrive(messageId, location, dateStr) {
-  console.log("⬆️ upload:", messageId, location);
-
   const stream = await client.getMessageContent(messageId);
-
+  
   const chunks = [];
   for await (const chunk of stream) {
     chunks.push(chunk);
   }
-
   const buffer = Buffer.concat(chunks);
 
-  // 🔥 แปลงเป็น stream (สำคัญมาก)
   const streamData = new Readable();
   streamData.push(buffer);
   streamData.push(null);
 
   const fileMetadata = {
-    name: `${location}_${messageId}.jpg`,
+    // ตั้งชื่อไฟล์ให้รู้ว่ามาจาก Location ไหน
+    name: `${location}_${dateStr}_${messageId}.jpg`,
     parents: [process.env.GOOGLE_FOLDER_ID]
   };
 
@@ -170,16 +177,14 @@ async function saveToDrive(messageId, location, dateStr) {
     body: streamData
   };
 
-  await drive.files.create({
+  return drive.files.create({
     resource: fileMetadata,
     media: media,
     fields: 'id'
   });
-
-  console.log("✅ uploaded:", messageId);
 }
 
-/* ================= REPLY ================= */
+/* ================= REPLY HELPER ================= */
 function reply(token, text) {
   return client.replyMessage(token, {
     type: 'text',
@@ -187,7 +192,8 @@ function reply(token, text) {
   });
 }
 
-/* ================= START ================= */
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running GOOGLE DRIVE FINAL');
+/* ================= START SERVER ================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running with Google Drive Logic at port ${PORT}`);
 });
