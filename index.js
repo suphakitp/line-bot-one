@@ -87,7 +87,7 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION ===== */
+    /* ===== SET LOCATION (ไม่ตอบกลับแล้ว) ===== */
     if (loc) {
       state.currentLocation = loc;
 
@@ -97,7 +97,7 @@ async function handleEvent(event) {
         }
       }
 
-      return reply(event.replyToken, `📍 ตั้ง Location = ${loc}`);
+      return; // ❌ ไม่ reply
     }
 
     /* ===== SAVE ===== */
@@ -114,10 +114,7 @@ async function handleEvent(event) {
 
       for (let item of state.buffer) {
 
-        if (!item.location) {
-          console.log("❗ skip no location");
-          continue;
-        }
+        if (!item.location) continue;
 
         const dateStr = new Date(item.timestamp)
           .toISOString()
@@ -161,17 +158,12 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= GOOGLE AUTH (FIX NEWLINE) ================= */
+/* ================= GOOGLE AUTH (FINAL FIX) ================= */
 function getAuth() {
-  const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
-  // 🔥 FIX สำคัญที่สุด
-  const fixedKey = credentials.private_key.replace(/\\n/g, '\n');
-
   return new google.auth.JWT(
-    credentials.client_email,
+    process.env.GOOGLE_CLIENT_EMAIL,
     null,
-    fixedKey,
+    process.env.GOOGLE_PRIVATE_KEY,
     ['https://www.googleapis.com/auth/drive']
   );
 }
@@ -251,5 +243,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY FINAL 100%');
+  console.log('🚀 BOT READY FINAL FIX');
 });
