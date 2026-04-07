@@ -69,17 +69,12 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-
-    if (!state.currentLocation) {
-      return reply(event.replyToken, '❗ กรุณาพิมพ์ Location ก่อนส่งรูป');
-    }
-
     console.log("📸 image");
 
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation
+      location: null
     });
 
     return;
@@ -95,6 +90,14 @@ async function handleEvent(event) {
     /* ===== SET LOCATION ===== */
     if (loc) {
       state.currentLocation = loc;
+
+      // 🔥 ใส่ location ให้รูปทั้งหมด
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+        }
+      }
+
       return reply(event.replyToken, `📍 ตั้ง Location = ${loc}`);
     }
 
@@ -111,6 +114,12 @@ async function handleEvent(event) {
       const summary = {};
 
       for (let item of state.buffer) {
+
+        if (!item.location) {
+          console.log("❗ skip no location");
+          continue;
+        }
+
         const dateStr = new Date(item.timestamp)
           .toISOString()
           .split('T')[0];
@@ -156,8 +165,8 @@ async function handleEvent(event) {
 /* ================= GOOGLE AUTH ================= */
 function getAuth() {
   console.log("EMAIL:", process.env.GOOGLE_CLIENT_EMAIL);
-  console.log("KEY START:", process.env.GOOGLE_PRIVATE_KEY.slice(0, 30));
-  console.log("KEY END:", process.env.GOOGLE_PRIVATE_KEY.slice(-30));
+  console.log("KEY START:", process.env.GOOGLE_PRIVATE_KEY?.slice(0, 30));
+  console.log("KEY END:", process.env.GOOGLE_PRIVATE_KEY?.slice(-30));
 
   return new google.auth.JWT(
     process.env.GOOGLE_CLIENT_EMAIL,
@@ -176,7 +185,6 @@ async function getOrCreateFolder(location, dateStr) {
 
   const folderName = `${location}/${dateStr}`;
 
-  // ค้นหา folder ก่อน
   const res = await drive.files.list({
     q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
     fields: 'files(id, name)'
@@ -186,7 +194,6 @@ async function getOrCreateFolder(location, dateStr) {
     return res.data.files[0].id;
   }
 
-  // สร้างใหม่
   const folder = await drive.files.create({
     requestBody: {
       name: folderName,
@@ -244,5 +251,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 BOT READY (FINAL)');
+  console.log('🚀 BOT READY FINAL ALL-IN');
 });
