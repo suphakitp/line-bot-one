@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const { google } = require('googleapis');
+const { Readable } = require('stream');
 
 const app = express();
 
@@ -26,10 +27,20 @@ const drive = google.drive({ version: 'v3', auth });
 /* ================= MEMORY ================= */
 const groupState = {};
 
+/* ================= HEALTH ================= */
+app.get('/', (req, res) => {
+  res.send('🟢 Bot is running');
+});
+
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  await Promise.all(req.body.events.map(handleEvent));
-  res.sendStatus(200);
+  try {
+    await Promise.all(req.body.events.map(handleEvent));
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ webhook error:", err);
+    res.sendStatus(500);
+  }
 });
 
 /* ================= LOCATION ================= */
@@ -64,30 +75,40 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
+    console.log("📸 image");
+
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
       location: state.currentLocation
     });
+
     return;
   }
 
   /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
+    console.log("💬", text);
 
     const loc = extractLocation(text);
 
+    /* ===== LOCATION ===== */
     if (loc) {
+      console.log("📍 location:", loc);
       state.currentLocation = loc;
       return;
     }
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
+      console.log("💾 saving...");
+
+      // 🔥 กัน event มาช้า
       await new Promise(r => setTimeout(r, 1500));
 
       let count = 0;
+      const summary = {};
 
       for (let item of state.buffer) {
         if (!item.location) continue;
@@ -96,19 +117,35 @@ async function handleEvent(event) {
           .toISOString()
           .split('T')[0];
 
-        await saveToDrive(item.id, item.location, dateStr);
-        count++;
+        try {
+          await saveToDrive(item.id, item.location, dateStr);
+
+          count++;
+          const key = `${item.location}/${dateStr}`;
+          summary[key] = (summary[key] || 0) + 1;
+
+        } catch (err) {
+          console.error("❌ save error:", err);
+        }
       }
 
       state.buffer = [];
 
-      return reply(event.replyToken, `✅ บันทึก ${count} รูป`);
+      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
+
+      for (let key in summary) {
+        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
+      }
+
+      return reply(event.replyToken, replyText);
     }
   }
 }
 
 /* ================= SAVE TO DRIVE ================= */
 async function saveToDrive(messageId, location, dateStr) {
+  console.log("⬆️ upload:", messageId, location);
+
   const stream = await client.getMessageContent(messageId);
 
   const chunks = [];
@@ -118,14 +155,19 @@ async function saveToDrive(messageId, location, dateStr) {
 
   const buffer = Buffer.concat(chunks);
 
+  // 🔥 แปลงเป็น stream (สำคัญมาก)
+  const streamData = new Readable();
+  streamData.push(buffer);
+  streamData.push(null);
+
   const fileMetadata = {
-    name: `${messageId}.jpg`,
+    name: `${location}_${messageId}.jpg`,
     parents: [process.env.GOOGLE_FOLDER_ID]
   };
 
   const media = {
     mimeType: 'image/jpeg',
-    body: Buffer.from(buffer)
+    body: streamData
   };
 
   await drive.files.create({
@@ -134,7 +176,7 @@ async function saveToDrive(messageId, location, dateStr) {
     fields: 'id'
   });
 
-  console.log("✅ uploaded to drive:", messageId);
+  console.log("✅ uploaded:", messageId);
 }
 
 /* ================= REPLY ================= */
@@ -146,4 +188,6 @@ function reply(token, text) {
 }
 
 /* ================= START ================= */
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log('🚀 Server running GOOGLE DRIVE FINAL');
+});
