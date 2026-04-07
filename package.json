@@ -1,0 +1,14 @@
+{
+  "name": "line-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.9.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "googleapis": "^171.4.0"
+  }
+}
