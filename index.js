@@ -42,9 +42,9 @@ function extractLocation(text) {
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // 🔥 รองรับข้อความยาว เช่น "Location A : 11:05"
-  match = text.match(/\b([a-z])\b/i);
-  if (match) return match[1].toUpperCase();
+  // รับ A เดี่ยว ๆ
+  match = text.match(/^[a-z]$/i);
+  if (match) return match[0].toUpperCase();
 
   return null;
 }
@@ -145,7 +145,7 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE (Google Drive) ================= */
+/* ================= SAVE TO GOOGLE DRIVE ================= */
 async function saveImage(messageId, location, dateStr) {
   console.log("⬆️ upload to drive:", messageId, location);
 
@@ -193,5 +193,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running GOOGLE DRIVE VERSION');
+  console.log('🚀 Server running GOOGLE DRIVE FINAL');
 });
