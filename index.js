@@ -38,17 +38,14 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION ================= */
+/* ================= LOCATION (แก้ไขให้ยืดหยุ่นขึ้น) ================= */
 function extractLocation(text) {
-  text = text.replace(/[^\w\s:]/g, '').trim();
-
-  let match = text.match(/location\s*([a-z0-9]+)/i);
+  // ดึงคำแรกที่ตามหลังคำว่า location หรือ แปลง (เช่น "Location A : 11:05" จะได้ "A")
+  let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  match = text.match(/แปลง\s*([a-z0-9]+)/i);
-  if (match) return match[1].toUpperCase();
-
-  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
+  // ถ้าส่งมาแค่ตัวอักษรเดียวโดดๆ เช่น "A" หรือ "B1"
+  if (/^[a-z0-9]+$/i.test(text.trim())) return text.trim().toUpperCase();
 
   return null;
 }
@@ -73,28 +70,25 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 image");
-
+    console.log("📸 image received");
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
       location: null
     });
-
     return;
   }
 
   /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    console.log("💬", text);
+    console.log("💬 text:", text);
 
     const loc = extractLocation(text);
 
-    /* ===== LOCATION ===== */
+    /* ===== SET LOCATION ===== */
     if (loc) {
-      console.log("📍 location:", loc);
-
+      console.log("📍 location detected:", loc);
       state.currentLocation = loc;
 
       for (let item of state.buffer) {
@@ -102,11 +96,10 @@ async function handleEvent(event) {
           item.location = loc;
         }
       }
-
       return;
     }
 
-    /* ===== SAVE ===== */
+    /* ===== SAVE (แก้ไขการตั้งชื่อไฟล์) ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
@@ -118,11 +111,9 @@ async function handleEvent(event) {
       for (let item of state.buffer) {
         if (!item.location) continue;
 
-        // --- ส่วนที่แก้ไข: จัดฟอร์แมตวันที่และเวลาไทย ---
+        // จัดการเรื่องวันที่และเวลา (เวลาไทย ICT)
         const dateObj = new Date(item.timestamp);
-        // วันที่ format: 2024-05-20
-        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' });
-        // เวลา format: 14-30-05
+        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }); // YYYY-MM-DD
         const timeStr = dateObj.toLocaleTimeString('th-TH', { 
             timeZone: 'Asia/Bangkok', 
             hour12: false, 
@@ -131,11 +122,10 @@ async function handleEvent(event) {
             second: '2-digit' 
         }).replace(/:/g, '-');
 
-        // ชื่อไฟล์ใหม่: สถานที่_วันที่_เวลา
+        // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น A_2024-05-22_11-05-00)
         const customFileName = `${item.location}_${dateStr}_${timeStr}`;
 
         try {
-          // ส่ง customFileName ไปที่ saveImage
           const res = await saveImage(item.id, item.location, dateStr, customFileName);
 
           if (res) {
@@ -143,43 +133,40 @@ async function handleEvent(event) {
             const key = `${item.location}/${dateStr}`;
             summary[key] = (summary[key] || 0) + 1;
           }
-
         } catch (err) {
           console.error("❌ save error:", err);
         }
       }
 
+      // Reset buffer หลังบันทึกเสร็จ
       state.buffer = [];
 
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
+      
+      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่ โปรดส่งรูปแล้วพิมพ์ Location ก่อนกดบันทึก";
 
       return reply(event.replyToken, replyText);
     }
   }
 }
 
-/* ================= SAVE ================= */
-// เพิ่มพารามิเตอร์ customFileName
+/* ================= SAVE (รองรับชื่อไฟล์ใหม่) ================= */
 async function saveImage(messageId, location, dateStr, customFileName) {
-  console.log("⬆️ upload:", customFileName);
-
   const stream = await client.getMessageContent(messageId);
-
   const chunks = [];
   for await (const chunk of stream) {
     chunks.push(chunk);
   }
-
   const buffer = Buffer.concat(chunks);
 
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
         folder: `${location}/${dateStr}`,
-        public_id: customFileName, // ใช้ชื่อไฟล์ที่เราตั้งแทน messageId
+        public_id: customFileName,
         overwrite: true
       },
       (err, result) => {
@@ -200,5 +187,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running with Custom Filename ICT');
+  console.log('🚀 Bot is updated and running');
 });
