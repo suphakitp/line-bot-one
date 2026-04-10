@@ -75,7 +75,6 @@ async function handleEvent(event) {
   if (event.message.type === 'image') {
     console.log("📸 image");
 
-    // 🔥 ยังไม่รู้ location → เก็บไว้ก่อน
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
@@ -98,7 +97,6 @@ async function handleEvent(event) {
 
       state.currentLocation = loc;
 
-      // 🔥 assign ย้อนหลังให้รูปที่ยังไม่มี location
       for (let item of state.buffer) {
         if (!item.location) {
           item.location = loc;
@@ -112,7 +110,6 @@ async function handleEvent(event) {
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
-      // 🔥 กัน event มาช้า
       await new Promise(r => setTimeout(r, 1500));
 
       let count = 0;
@@ -126,7 +123,13 @@ async function handleEvent(event) {
           .split('T')[0];
 
         try {
-          const res = await saveImage(item.id, item.location, dateStr);
+          // ✅ ส่ง timestamp เพิ่ม
+          const res = await saveImage(
+            item.id,
+            item.location,
+            dateStr,
+            item.timestamp
+          );
 
           if (res) {
             count++;
@@ -140,10 +143,8 @@ async function handleEvent(event) {
         }
       }
 
-      // reset
       state.buffer = [];
 
-      // ===== SUMMARY =====
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
@@ -156,7 +157,7 @@ async function handleEvent(event) {
 }
 
 /* ================= SAVE ================= */
-async function saveImage(messageId, location, dateStr) {
+async function saveImage(messageId, location, dateStr, timestamp) {
   console.log("⬆️ upload:", messageId, location);
 
   const stream = await client.getMessageContent(messageId);
@@ -168,12 +169,47 @@ async function saveImage(messageId, location, dateStr) {
 
   const buffer = Buffer.concat(chunks);
 
+  // ===== FORMAT วันที่ + เวลา =====
+  const d = new Date(timestamp);
+
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = String(d.getFullYear() + 543).slice(-2);
+
+  const hours24 = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+
+  const ampm = hours24 >= 12 ? 'PM' : 'AM';
+  const hours12 = String(hours24 % 12 || 12).padStart(2, '0');
+
+  // ✅ ชื่อไฟล์
+  const fileName = `${location}_${day}-${month}-${year}_${hours24}-${minutes}`;
+
+  // ✅ ข้อความบนรูป
+  const overlayText = `Location ${location} : ${hours12}:${minutes} ${ampm}`;
+
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
         folder: `${location}/${dateStr}`,
-        public_id: messageId,
-        overwrite: false
+        public_id: fileName,
+        overwrite: false,
+
+        // ✅ เขียนข้อความลงรูป
+        transformation: [
+          {
+            overlay: {
+              font_family: "Arial",
+              font_size: 40,
+              text: overlayText
+            },
+            gravity: "south_east",
+            x: 20,
+            y: 20,
+            color: "#ffffff",
+            background: "rgba(0,0,0,0.5)"
+          }
+        ]
       },
       (err, result) => {
         if (err) {
