@@ -10,6 +10,7 @@
     "cloudinary": "^2.9.0",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
-    "googleapis": "^171.4.0"
+    "googleapis": "^171.4.0",
+    "jimp": "^1.6.1"
   }
 }
