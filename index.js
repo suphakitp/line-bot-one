@@ -2,10 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cloudinary = require('cloudinary').v2;
-const Jimp = require('jimp'); 
+const { Jimp } = require('jimp'); // แก้ไขการเรียกใช้เป็น { Jimp }
 
 const app = express();
 
+/* ================= CONFIG ================= */
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -19,12 +20,15 @@ cloudinary.config({
   api_secret: process.env.API_SECRET
 });
 
+/* ================= MEMORY ================= */
 const groupState = {};
 
+/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot is running with Watermark & Smart Location');
+  res.send('🟢 Bot is running - Fixed Jimp v1');
 });
 
+/* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
@@ -35,23 +39,19 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= แก้ไขจุดนี้: ดึง Location ได้แม้มีข้อความอื่นปน ================= */
+/* ================= LOCATION EXTRACTOR ================= */
 function extractLocation(text) {
-  // รองรับ "Location A : 11:05 AM" -> จะได้ "A"
   let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
-
-  // รองรับพิมพ์ "A" หรือ "A1" เฉยๆ
   if (/^[a-z0-9]+$/i.test(text.trim())) return text.trim().toUpperCase();
-
   return null;
 }
 
+/* ================= MAIN EVENT HANDLER ================= */
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
-  const groupId = event.source.groupId || event.source.roomId || event.source.userId;
-
+  const groupId = event.source.groupId || event.source.userId;
   if (!groupState[groupId]) {
     groupState[groupId] = { buffer: [], currentLocation: null };
   }
@@ -63,7 +63,7 @@ async function handleEvent(event) {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation // ใส่ Location ล่าสุดที่บอทจำได้ให้ทันที
+      location: state.currentLocation
     });
     return;
   }
@@ -75,7 +75,6 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 ตรวจพบสถานที่:", loc);
       state.currentLocation = loc;
-      // อัปเดตย้อนหลังให้รูปที่ส่งมาก่อนหน้าในชุดเดียวกัน
       for (let item of state.buffer) {
         if (!item.location) item.location = loc;
       }
@@ -117,16 +116,17 @@ async function handleEvent(event) {
         }
       }
 
-      state.buffer = []; // ล้าง Buffer
-      let replyText = `✅ บันทึกพร้อมเขียนชื่อสำเร็จ ${count} รูป\n\n`;
+      state.buffer = [];
+      let replyText = `✅ บันทึกและเขียนชื่อสำเร็จ ${count} รูป\n\n`;
       for (let key in summary) replyText += `📁 ${key} → ${summary[key]} รูป\n`;
-      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่ โปรดส่งรูปแล้วระบุ Location ก่อนกดบันทึก";
+      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่";
 
       return reply(event.replyToken, replyText);
     }
   }
 }
 
+/* ================= WATERMARK & SAVE FUNCTION ================= */
 async function saveImageWithWatermark(messageId, location, dateStr, fileName, label) {
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
@@ -134,15 +134,18 @@ async function saveImageWithWatermark(messageId, location, dateStr, fileName, la
   const buffer = Buffer.concat(chunks);
 
   try {
+    // แก้ไขตรงนี้เพื่อรองรับ Jimp ทั้ง v0 และ v1
     const image = await Jimp.read(buffer);
-    const font = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
     
-    // วางมุมขวาล่าง
-    const x = image.bitmap.width - Jimp.measureText(font, label) - 20;
+    // โหลดฟอนต์ (ใช้ฟอนต์มาตรฐานของ Jimp)
+    // สำหรับ Jimp v1+ จะใช้ฟอนต์จาก enum ของเขาเอง
+    const font = await Jimp.loadFont(require('jimp').FONT_SANS_32_WHITE || 'open-sans-32-white-all');
+    
+    const x = image.bitmap.width - (label.length * 18) - 20; 
     const y = image.bitmap.height - 60;
-    image.print(font, x, y, label);
-
-    const finalBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
+    
+    image.print(font, x > 0 ? x : 20, y, label);
+    const finalBuffer = await image.getBufferAsync("image/jpeg");
 
     return new Promise((resolve, reject) => {
       cloudinary.uploader.upload_stream(
@@ -153,13 +156,15 @@ async function saveImageWithWatermark(messageId, location, dateStr, fileName, la
         }
       ).end(finalBuffer);
     });
-  } catch (err) { throw err; }
+  } catch (err) {
+    throw err;
+  }
 }
 
 function reply(token, text) {
   return client.replyMessage(token, { type: 'text', text });
 }
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 บอททำงานแล้ว!');
+app.listen(process.env.PORT || 10000, () => {
+  console.log('🚀 บอทแก้ไข Error Jimp เรียบร้อยแล้ว!');
 });
