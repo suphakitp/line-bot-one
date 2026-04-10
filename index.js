@@ -81,7 +81,7 @@ async function handleEvent(event) {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
+      location: state.currentLocation || null
     });
 
     return;
