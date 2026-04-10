@@ -2,11 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cloudinary = require('cloudinary').v2;
-const Jimp = require('jimp'); // ต้องติดตั้งด้วยคำสั่ง npm install jimp ก่อน
+const Jimp = require('jimp'); 
 
 const app = express();
 
-/* ================= CONFIG ================= */
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -20,15 +19,12 @@ cloudinary.config({
   api_secret: process.env.API_SECRET
 });
 
-/* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
   res.send('🟢 Bot is running with Watermark & Smart Location');
 });
 
-/* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
@@ -39,73 +35,55 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION (ปรับปรุงให้อ่าน Location A : 11:05 AM ได้) ================= */
+/* ================= แก้ไขจุดนี้: ดึง Location ได้แม้มีข้อความอื่นปน ================= */
 function extractLocation(text) {
-  // ดึงเฉพาะตัวอักษร/ตัวเลขที่ตามหลังคำว่า location หรือ แปลง
+  // รองรับ "Location A : 11:05 AM" -> จะได้ "A"
   let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // ถ้าส่งมาแค่ชื่อสถานที่สั้นๆ เช่น A หรือ B1
+  // รองรับพิมพ์ "A" หรือ "A1" เฉยๆ
   if (/^[a-z0-9]+$/i.test(text.trim())) return text.trim().toUpperCase();
 
   return null;
 }
 
-/* ================= MAIN ================= */
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
-  const groupId =
-    event.source.groupId ||
-    event.source.roomId ||
-    event.source.userId;
+  const groupId = event.source.groupId || event.source.roomId || event.source.userId;
 
   if (!groupState[groupId]) {
-    groupState[groupId] = {
-      buffer: [],
-      currentLocation: null
-    };
+    groupState[groupId] = { buffer: [], currentLocation: null };
   }
 
   const state = groupState[groupId];
 
-  /* ===== 📸 ส่วนรับรูปภาพ ===== */
   if (event.message.type === 'image') {
     console.log("📸 ได้รับรูปภาพ");
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation // ถ้ามี location ค้างไว้ให้ใส่เลย
+      location: state.currentLocation // ใส่ Location ล่าสุดที่บอทจำได้ให้ทันที
     });
     return;
   }
 
-  /* ===== 💬 ส่วนรับข้อความ ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    console.log("💬 ข้อความ:", text);
-
     const loc = extractLocation(text);
 
-    /* ===== ระบุสถานที่ ===== */
     if (loc) {
       console.log("📍 ตรวจพบสถานที่:", loc);
       state.currentLocation = loc;
-
-      // อัปเดตสถานที่ให้รูปภาพที่ยังไม่มีสถานที่ใน Buffer
+      // อัปเดตย้อนหลังให้รูปที่ส่งมาก่อนหน้าในชุดเดียวกัน
       for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-        }
+        if (!item.location) item.location = loc;
       }
       return;
     }
 
-    /* ===== 💾 สั่งบันทึกรูปภาพ ===== */
     if (text === 'บันทึกรูปภาพ') {
-      console.log("💾 กำลังประมวลผลและบันทึก...");
-
-      // รอเผื่อ Event ของ LINE มาช้า
+      console.log("💾 กำลังประมวลผล...");
       await new Promise(r => setTimeout(r, 1500));
 
       let count = 0;
@@ -114,25 +92,21 @@ async function handleEvent(event) {
       for (let item of state.buffer) {
         if (!item.location) continue;
 
-        // จัดการวันที่และเวลาไทย (ICT)
         const dateObj = new Date(item.timestamp);
-        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }); // 2024-05-22
+        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' });
         const timeStr = dateObj.toLocaleTimeString('th-TH', { 
             timeZone: 'Asia/Bangkok', 
             hour12: false, 
             hour: '2-digit', 
             minute: '2-digit', 
             second: '2-digit' 
-        }).replace(/:/g, '-'); // 11-05-00
+        }).replace(/:/g, '-');
 
-        // ชื่อไฟล์ และ ข้อความบนรูป
-        const customFileName = `${item.location}_${dateStr}_${timeStr}`;
-        const watermarkText = `${item.location} | ${dateStr} | ${timeStr.replace(/-/g, ':')}`;
+        const fileName = `${item.location}_${dateStr}_${timeStr}`;
+        const label = `${item.location} | ${dateStr} | ${timeStr.replace(/-/g, ':')}`;
 
         try {
-          // เรียกฟังก์ชันเขียนลายน้ำและอัปโหลด
-          const res = await saveImageWithWatermark(item.id, item.location, dateStr, customFileName, watermarkText);
-
+          const res = await saveImageWithWatermark(item.id, item.location, dateStr, fileName, label);
           if (res) {
             count++;
             const key = `${item.location}/${dateStr}`;
@@ -143,15 +117,9 @@ async function handleEvent(event) {
         }
       }
 
-      // ล้างข้อมูลใน Buffer หลังทำงานเสร็จ
-      state.buffer = [];
-
-      // สรุปผลส่งกลับหาผู้ใช้
+      state.buffer = []; // ล้าง Buffer
       let replyText = `✅ บันทึกพร้อมเขียนชื่อสำเร็จ ${count} รูป\n\n`;
-      for (let key in summary) {
-        replyText += `📁 ${key} → ${summary[key]} รูป\n`;
-      }
-      
+      for (let key in summary) replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่ โปรดส่งรูปแล้วระบุ Location ก่อนกดบันทึก";
 
       return reply(event.replyToken, replyText);
@@ -159,64 +127,39 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= 🛠 ฟังก์ชันเขียนลายน้ำและอัปโหลด ================= */
-async function saveImageWithWatermark(messageId, location, dateStr, customFileName, watermarkText) {
-  // 1. ดึงรูปภาพจาก LINE
+async function saveImageWithWatermark(messageId, location, dateStr, fileName, label) {
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-  const originalBuffer = Buffer.concat(chunks);
+  for await (const chunk of stream) chunks.push(chunk);
+  const buffer = Buffer.concat(chunks);
 
   try {
-    // 2. ใช้ Jimp จัดการรูปภาพ
-    const image = await Jimp.read(originalBuffer);
-    
-    // โหลดฟอนต์มาตรฐานของ Jimp (สีขาว)
+    const image = await Jimp.read(buffer);
     const font = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
     
-    // คำนวณตำแหน่งวางข้อความ (มุมขวาล่าง)
-    const textWidth = Jimp.measureText(font, watermarkText);
-    const x = image.bitmap.width - textWidth - 20;
-    const y = image.bitmap.height - 50;
+    // วางมุมขวาล่าง
+    const x = image.bitmap.width - Jimp.measureText(font, label) - 20;
+    const y = image.bitmap.height - 60;
+    image.print(font, x, y, label);
 
-    // พิมพ์ข้อความลงบนภาพ
-    image.print(font, x, y, watermarkText);
-
-    // แปลงเป็น Buffer สำหรับอัปโหลด
     const finalBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
 
-    // 3. อัปโหลดไปยัง Cloudinary
     return new Promise((resolve, reject) => {
       cloudinary.uploader.upload_stream(
-        {
-          folder: `${location}/${dateStr}`,
-          public_id: customFileName,
-          overwrite: true
-        },
+        { folder: `${location}/${dateStr}`, public_id: fileName, overwrite: true },
         (err, result) => {
           if (err) return reject(err);
           resolve(result);
         }
       ).end(finalBuffer);
     });
-
-  } catch (err) {
-    console.error("Jimp/Upload error:", err);
-    throw err;
-  }
+  } catch (err) { throw err; }
 }
 
-/* ================= REPLY ================= */
 function reply(token, text) {
-  return client.replyMessage(token, {
-    type: 'text',
-    text
-  });
+  return client.replyMessage(token, { type: 'text', text });
 }
 
-/* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 บอททำงานแล้ว พร้อมระบบเขียนชื่อลงรูป!');
+  console.log('🚀 บอททำงานแล้ว!');
 });
