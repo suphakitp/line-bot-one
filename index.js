@@ -2,11 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const cloudinary = require('cloudinary').v2;
-const { Jimp } = require('jimp'); // แก้ไขการเรียกใช้เป็น { Jimp }
+const { Jimp } = require('jimp'); // แก้ไขเป็นโครงสร้างแบบใหม่
 
 const app = express();
 
-/* ================= CONFIG ================= */
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -20,15 +19,12 @@ cloudinary.config({
   api_secret: process.env.API_SECRET
 });
 
-/* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot is running - Fixed Jimp v1');
+  res.send('🟢 Bot is running - Final Fixed Version');
 });
 
-/* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
@@ -39,7 +35,6 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION EXTRACTOR ================= */
 function extractLocation(text) {
   let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
@@ -47,11 +42,10 @@ function extractLocation(text) {
   return null;
 }
 
-/* ================= MAIN EVENT HANDLER ================= */
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
-  const groupId = event.source.groupId || event.source.userId;
+  const groupId = event.source.groupId || event.source.roomId || event.source.userId;
   if (!groupState[groupId]) {
     groupState[groupId] = { buffer: [], currentLocation: null };
   }
@@ -59,7 +53,6 @@ async function handleEvent(event) {
   const state = groupState[groupId];
 
   if (event.message.type === 'image') {
-    console.log("📸 ได้รับรูปภาพ");
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
@@ -73,7 +66,6 @@ async function handleEvent(event) {
     const loc = extractLocation(text);
 
     if (loc) {
-      console.log("📍 ตรวจพบสถานที่:", loc);
       state.currentLocation = loc;
       for (let item of state.buffer) {
         if (!item.location) item.location = loc;
@@ -82,9 +74,7 @@ async function handleEvent(event) {
     }
 
     if (text === 'บันทึกรูปภาพ') {
-      console.log("💾 กำลังประมวลผล...");
       await new Promise(r => setTimeout(r, 1500));
-
       let count = 0;
       const summary = {};
 
@@ -112,21 +102,20 @@ async function handleEvent(event) {
             summary[key] = (summary[key] || 0) + 1;
           }
         } catch (err) {
-          console.error("❌ save error:", err);
+          console.error("❌ Save error details:", err);
         }
       }
 
       state.buffer = [];
       let replyText = `✅ บันทึกและเขียนชื่อสำเร็จ ${count} รูป\n\n`;
       for (let key in summary) replyText += `📁 ${key} → ${summary[key]} รูป\n`;
-      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่";
+      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่ โปรดส่งรูปใหม่แล้วระบุพิกัดก่อนกดบันทึก";
 
       return reply(event.replyToken, replyText);
     }
   }
 }
 
-/* ================= WATERMARK & SAVE FUNCTION ================= */
 async function saveImageWithWatermark(messageId, location, dateStr, fileName, label) {
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
@@ -134,18 +123,21 @@ async function saveImageWithWatermark(messageId, location, dateStr, fileName, la
   const buffer = Buffer.concat(chunks);
 
   try {
-    // แก้ไขตรงนี้เพื่อรองรับ Jimp ทั้ง v0 และ v1
+    // การเรียกใช้ Jimp.read แบบรองรับ v1.0.0
     const image = await Jimp.read(buffer);
     
-    // โหลดฟอนต์ (ใช้ฟอนต์มาตรฐานของ Jimp)
-    // สำหรับ Jimp v1+ จะใช้ฟอนต์จาก enum ของเขาเอง
+    // โหลดฟอนต์ (ปรับวิธีโหลดให้รองรับทุกเวอร์ชัน)
+    const { Font } = require('jimp'); 
     const font = await Jimp.loadFont(require('jimp').FONT_SANS_32_WHITE || 'open-sans-32-white-all');
     
+    // คำนวณตำแหน่ง (ประมาณการความกว้าง)
     const x = image.bitmap.width - (label.length * 18) - 20; 
     const y = image.bitmap.height - 60;
     
-    image.print(font, x > 0 ? x : 20, y, label);
-    const finalBuffer = await image.getBufferAsync("image/jpeg");
+    image.print({ font: font, x: x > 0 ? x : 10, y: y, text: label });
+    
+    // แปลงไฟล์เป็น Buffer สำหรับ Cloudinary
+    const finalBuffer = await image.getBuffer("image/jpeg");
 
     return new Promise((resolve, reject) => {
       cloudinary.uploader.upload_stream(
@@ -165,6 +157,4 @@ function reply(token, text) {
   return client.replyMessage(token, { type: 'text', text });
 }
 
-app.listen(process.env.PORT || 10000, () => {
-  console.log('🚀 บอทแก้ไข Error Jimp เรียบร้อยแล้ว!');
-});
+app.listen(process.env.PORT || 10000);
