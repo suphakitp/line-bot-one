@@ -42,13 +42,16 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
 
+  // ✅ รองรับ Location A : 11:05 AM
   let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
+  // ✅ รองรับ A หรือ A 11:05
+  match = text.match(/^([a-z])(\s|$)/i);
+  if (match) return match[1].toUpperCase();
 
   return null;
 }
@@ -123,7 +126,7 @@ async function handleEvent(event) {
           .split('T')[0];
 
         try {
-          // ✅ ส่ง timestamp เพิ่ม
+          // ✅ ส่ง timestamp เข้าไป
           const res = await saveImage(
             item.id,
             item.location,
