@@ -42,16 +42,13 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
 
-  // ✅ รองรับ Location A : 11:05 AM
   let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
   match = text.match(/แปลง\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // ✅ รองรับ A หรือ A 11:05
-  match = text.match(/^([a-z])(\s|$)/i);
-  if (match) return match[1].toUpperCase();
+  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
 
   return null;
 }
@@ -81,7 +78,7 @@ async function handleEvent(event) {
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: state.currentLocation || null
+      location: null
     });
 
     return;
@@ -121,22 +118,28 @@ async function handleEvent(event) {
       for (let item of state.buffer) {
         if (!item.location) continue;
 
-        const dateStr = new Date(item.timestamp)
-          .toISOString()
-          .split('T')[0];
+        // --- ส่วนที่แก้ไข: จัดฟอร์แมตวันที่และเวลาไทย ---
+        const dateObj = new Date(item.timestamp);
+        // วันที่ format: 2024-05-20
+        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' });
+        // เวลา format: 14-30-05
+        const timeStr = dateObj.toLocaleTimeString('th-TH', { 
+            timeZone: 'Asia/Bangkok', 
+            hour12: false, 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit' 
+        }).replace(/:/g, '-');
+
+        // ชื่อไฟล์ใหม่: สถานที่_วันที่_เวลา
+        const customFileName = `${item.location}_${dateStr}_${timeStr}`;
 
         try {
-          // ✅ ส่ง timestamp เข้าไป
-          const res = await saveImage(
-            item.id,
-            item.location,
-            dateStr,
-            item.timestamp
-          );
+          // ส่ง customFileName ไปที่ saveImage
+          const res = await saveImage(item.id, item.location, dateStr, customFileName);
 
           if (res) {
             count++;
-
             const key = `${item.location}/${dateStr}`;
             summary[key] = (summary[key] || 0) + 1;
           }
@@ -149,7 +152,6 @@ async function handleEvent(event) {
       state.buffer = [];
 
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
-
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
@@ -160,8 +162,9 @@ async function handleEvent(event) {
 }
 
 /* ================= SAVE ================= */
-async function saveImage(messageId, location, dateStr, timestamp) {
-  console.log("⬆️ upload:", messageId, location);
+// เพิ่มพารามิเตอร์ customFileName
+async function saveImage(messageId, location, dateStr, customFileName) {
+  console.log("⬆️ upload:", customFileName);
 
   const stream = await client.getMessageContent(messageId);
 
@@ -172,56 +175,15 @@ async function saveImage(messageId, location, dateStr, timestamp) {
 
   const buffer = Buffer.concat(chunks);
 
-  // ===== FORMAT วันที่ + เวลา =====
-  const d = new Date(timestamp);
-
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = String(d.getFullYear() + 543).slice(-2);
-
-  const hours24 = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-
-  const ampm = hours24 >= 12 ? 'PM' : 'AM';
-  const hours12 = String(hours24 % 12 || 12).padStart(2, '0');
-
-  // ✅ ชื่อไฟล์
-  const fileName = `${location}_${day}-${month}-${year}_${hours24}-${minutes}`;
-
-  // ✅ ข้อความบนรูป
-  const overlayText = `Location ${location} : ${hours12}:${minutes} ${ampm}`;
-
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
       {
         folder: `${location}/${dateStr}`,
-        public_id: fileName,
-        overwrite: false,
-
-        // ✅ เขียนข้อความลงรูป
-        transformation: [
-          {
-            overlay: {
-              font_family: "Arial",
-              font_size: 40,
-              text: overlayText
-            },
-            gravity: "south_east",
-            x: 20,
-            y: 20,
-            color: "#ffffff",
-            background: "rgba(0,0,0,0.5)"
-          }
-        ]
+        public_id: customFileName, // ใช้ชื่อไฟล์ที่เราตั้งแทน messageId
+        overwrite: true
       },
       (err, result) => {
-        if (err) {
-          if (err.message && err.message.includes('already exists')) {
-            return resolve(null);
-          }
-          return reject(err);
-        }
-
+        if (err) return reject(err);
         resolve(result);
       }
     ).end(buffer);
@@ -238,5 +200,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running FINAL FIXED');
+  console.log('🚀 Server running with Custom Filename ICT');
 });
