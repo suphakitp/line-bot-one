@@ -115,12 +115,12 @@ async function handleEvent(event) {
         // จัดการเรื่องวันที่และเวลา (เวลาไทย ICT)
         const dateObj = new Date(item.timestamp);
         const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }); // YYYY-MM-DD
-	const timeStr = 'Location_' + item.location + '_Time-' + dateObj.toLocaleTimeString('th-TH', { 
-    	timeZone: 'Asia/Bangkok', 
-  	hour12: false, 
-  	hour: '2-digit', 
-   	minute: '2-digit', 
-   	second: '2-digit' 
+	const timeStr = dateObj.toLocaleTimeString('th-TH', { 
+  	  timeZone: 'Asia/Bangkok', 
+	   hour12: false, 
+	   hour: '2-digit', 
+ 	   minute: '2-digit', 
+	   second: '2-digit' 
 	}).replace(/:/g, '-');
 
         // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น Location_A_2024-05-22_Time-11-05-00 )
