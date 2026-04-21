@@ -24,7 +24,7 @@ const groupState = {};
 
 /* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot is running');
+  res.send('🟢 Bot running (stable)');
 });
 
 /* ================= WEBHOOK ================= */
@@ -59,7 +59,8 @@ async function handleEvent(event) {
 
   if (!groupState[groupId]) {
     groupState[groupId] = {
-      buffer: []
+      buffer: [],
+      lastImageTime: 0
     };
   }
 
@@ -67,94 +68,131 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 image received");
-
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null // ❗ รอ assign ทีหลัง
+      location: null
     });
 
+    state.lastImageTime = Date.now(); // 👈 สำคัญ
     return;
   }
 
   /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    console.log("💬 text:", text);
-
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION (Assign ให้ทุกภาพที่ยังไม่มี) ===== */
-if (loc) {
-  console.log("📍 location detected:", loc);
+    /* ===== SET LOCATION ===== */
+    if (loc) {
+      console.log("📍 location:", loc);
 
-  // ⏳ รอให้รูปเข้าครบก่อน (สำคัญมาก)
-  await new Promise(r => setTimeout(r, 1500));
+      // ⏳ รอจนรูปหยุดเข้าจริง
+      while (Date.now() - state.lastImageTime < 1500) {
+        await new Promise(r => setTimeout(r, 300));
+      }
 
-  let assigned = 0;
+      let assigned = 0;
 
-  for (let item of state.buffer) {
-    if (!item.location) {
-      item.location = loc;
-      assigned++;
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+          assigned++;
+        }
+      }
+
+      return reply(event.replyToken, `📍 ${loc} → ${assigned} รูป`);
     }
-  }
-
-  console.log(`✅ assigned ${assigned} images to ${loc}`);
-  return reply(event.replyToken, `📍 ตั้งค่า ${loc} ให้ ${assigned} รูป`);
-}
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
+      console.log("📦 buffer:", state.buffer.length);
 
-      await new Promise(r => setTimeout(r, 1500));
+      const limit = 5; // 👈 ปรับได้ (5-10 ดีสุด)
+      let index = 0;
+
+      async function uploadBatch() {
+        const batch = state.buffer.slice(index, index + limit);
+        index += limit;
+
+        const results = await Promise.all(batch.map(uploadOne));
+        return results;
+      }
+
+      async function uploadOne(item) {
+        if (!item.location) return null;
+
+        try {
+          const stream = await client.getMessageContent(item.id);
+          const chunks = [];
+
+          for await (const chunk of stream) {
+            chunks.push(chunk);
+          }
+
+          const buffer = Buffer.concat(chunks);
+
+          const dateObj = new Date(item.timestamp);
+
+          const dateStr = dateObj.toLocaleDateString('sv-SE', {
+            timeZone: 'Asia/Bangkok'
+          });
+
+          const timeStr = dateObj.toLocaleTimeString('th-TH', {
+            timeZone: 'Asia/Bangkok',
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+          }).replace(/:/g, '-');
+
+          const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
+
+          return new Promise((resolve) => {
+            cloudinary.uploader.upload_stream(
+              {
+                folder: `${item.location}/${dateStr}`,
+                public_id: customFileName,
+                overwrite: true
+              },
+              (err, result) => {
+                if (err) {
+                  console.error("❌ upload fail:", err);
+                  return resolve(null);
+                }
+                resolve({
+                  location: item.location,
+                  date: dateStr
+                });
+              }
+            ).end(buffer);
+          });
+
+        } catch (err) {
+          console.error("❌ fetch fail:", err);
+          return null;
+        }
+      }
+
+      let allResults = [];
+
+      while (index < state.buffer.length) {
+        const res = await uploadBatch();
+        allResults = allResults.concat(res);
+      }
 
       let count = 0;
       const summary = {};
 
-      for (let item of state.buffer) {
-        if (!item.location) {
-          console.log("⚠️ skipped no location:", item.id);
-          continue;
-        }
+      for (let res of allResults) {
+        if (!res) continue;
 
-        const dateObj = new Date(item.timestamp);
-
-        const dateStr = dateObj.toLocaleDateString('sv-SE', {
-          timeZone: 'Asia/Bangkok'
-        });
-
-        const timeStr = dateObj.toLocaleTimeString('th-TH', {
-          timeZone: 'Asia/Bangkok',
-          hour12: false,
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        }).replace(/:/g, '-');
-
-        const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
-
-        try {
-          const res = await saveImage(
-            item.id,
-            item.location,
-            dateStr,
-            customFileName
-          );
-
-          if (res) {
-            count++;
-            const key = `${item.location}/${dateStr}`;
-            summary[key] = (summary[key] || 0) + 1;
-          }
-        } catch (err) {
-          console.error("❌ save error:", err);
-        }
+        count++;
+        const key = `${res.location}/${res.date}`;
+        summary[key] = (summary[key] || 0) + 1;
       }
 
-      // ล้าง buffer หลังบันทึก
       state.buffer = [];
 
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
@@ -164,38 +202,12 @@ if (loc) {
       }
 
       if (count === 0) {
-        replyText = "⚠️ ไม่มีรูปที่มี location";
+        replyText = "⚠️ ไม่มีรูปที่บันทึกได้";
       }
 
       return reply(event.replyToken, replyText);
     }
   }
-}
-
-/* ================= SAVE ================= */
-async function saveImage(messageId, location, dateStr, customFileName) {
-  const stream = await client.getMessageContent(messageId);
-  const chunks = [];
-
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-
-  const buffer = Buffer.concat(chunks);
-
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload_stream(
-      {
-        folder: `${location}/${dateStr}`,
-        public_id: customFileName,
-        overwrite: true
-      },
-      (err, result) => {
-        if (err) return reject(err);
-        resolve(result);
-      }
-    ).end(buffer);
-  });
 }
 
 /* ================= REPLY ================= */
@@ -208,5 +220,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot running (fixed version)');
+  console.log('🚀 Bot running (final stable version)');
 });
