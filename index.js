@@ -64,14 +64,14 @@ async function handleEvent(event) {
       id: event.message.id,
       timestamp: event.timestamp,
       location: null,
-      bufferData: null
+      bufferData: null,
+      isLoading: true // 🔥 ตัวสำคัญ
     };
 
     state.buffer.push(item);
     state.lastImageTime = Date.now();
 
-    // 🔥 โหลดทันที (แต่ยังไม่ await)
-    cacheImage(item);
+    cacheImage(item); // async
 
     return;
   }
@@ -85,7 +85,7 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 set location:", loc);
 
-      // รอให้รูปเข้าครบ
+      // รอให้รูปเข้าครบก่อน
       while (Date.now() - state.lastImageTime < 1500) {
         await new Promise(r => setTimeout(r, 300));
       }
@@ -106,20 +106,20 @@ async function handleEvent(event) {
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
-      // 🔥 สำคัญที่สุด: รอให้ cache เสร็จ
+      // 🔥 รอจนโหลดครบจริง (ใช้ isLoading)
       let waitTime = 0;
 
       while (true) {
-        const notReady = state.buffer.filter(item => !item.bufferData);
+        const loading = state.buffer.filter(item => item.isLoading);
 
-        if (notReady.length === 0) break;
+        if (loading.length === 0) break;
 
-        if (waitTime > 10000) {
+        if (waitTime > 15000) {
           console.log("⚠️ cache timeout");
           break;
         }
 
-        console.log(`⏳ waiting cache... (${notReady.length} รูป)`);
+        console.log(`⏳ ยังโหลดไม่เสร็จ ${loading.length} รูป`);
 
         await new Promise(r => setTimeout(r, 300));
         waitTime += 300;
@@ -198,6 +198,8 @@ async function cacheImage(item) {
       }
 
       item.bufferData = Buffer.concat(chunks);
+      item.isLoading = false; // 🔥 สำคัญสุด
+
       console.log("✅ cached:", item.id);
       return;
 
@@ -207,6 +209,7 @@ async function cacheImage(item) {
     }
   }
 
+  item.isLoading = false;
   console.log("❌ cache fail:", item.id);
 }
 
@@ -219,4 +222,6 @@ function reply(token, text) {
 }
 
 /* ================= START ================= */
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("🚀 Bot running (final stable version)");
+});
