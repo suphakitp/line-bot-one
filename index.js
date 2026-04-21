@@ -123,8 +123,8 @@ async function handleEvent(event) {
    	second: '2-digit' 
 	}).replace(/:/g, '-');
 
-        // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น A_2024-05-22_11-05-00)
-        const customFileName = `${item.location}_${dateStr}_${timeStr}`;
+        // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น Location_A_2024-05-22_Time-11-05-00 )
+        const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
 
         try {
           const res = await saveImage(item.id, item.location, dateStr, customFileName);
