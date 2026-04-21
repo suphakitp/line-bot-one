@@ -22,20 +22,10 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH ================= */
-app.get('/', (req, res) => {
-  res.send('🟢 Bot running (no-loss version)');
-});
-
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  try {
-    await Promise.all(req.body.events.map(handleEvent));
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ webhook error:", err);
-    res.sendStatus(500);
-  }
+  await Promise.all(req.body.events.map(handleEvent));
+  res.sendStatus(200);
 });
 
 /* ================= LOCATION ================= */
@@ -68,7 +58,7 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 receive & cache image");
+    console.log("📸 receive image");
 
     const item = {
       id: event.message.id,
@@ -80,7 +70,7 @@ async function handleEvent(event) {
     state.buffer.push(item);
     state.lastImageTime = Date.now();
 
-    // 🔥 โหลดรูปทันที (สำคัญที่สุด)
+    // 🔥 โหลดรูปทันที
     cacheImage(item);
 
     return;
@@ -93,9 +83,9 @@ async function handleEvent(event) {
 
     /* ===== SET LOCATION ===== */
     if (loc) {
-      console.log("📍 location:", loc);
+      console.log("📍 set location:", loc);
 
-      // รอรูปเข้าครบ
+      // รอให้รูปเข้าครบก่อน
       while (Date.now() - state.lastImageTime < 1500) {
         await new Promise(r => setTimeout(r, 300));
       }
@@ -115,7 +105,6 @@ async function handleEvent(event) {
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
-      console.log("📦 buffer:", state.buffer.length);
 
       let count = 0;
       const summary = {};
@@ -126,61 +115,50 @@ async function handleEvent(event) {
           continue;
         }
 
-        try {
-          const dateObj = new Date(item.timestamp);
+        const dateObj = new Date(item.timestamp);
 
-          const dateStr = dateObj.toLocaleDateString('sv-SE', {
-            timeZone: 'Asia/Bangkok'
-          });
+        const dateStr = dateObj.toLocaleDateString('sv-SE', {
+          timeZone: 'Asia/Bangkok'
+        });
 
-          const timeStr = dateObj.toLocaleTimeString('th-TH', {
-            timeZone: 'Asia/Bangkok',
-            hour12: false,
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-          }).replace(/:/g, '-');
+        const timeStr = dateObj.toLocaleTimeString('th-TH', {
+          timeZone: 'Asia/Bangkok',
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        }).replace(/:/g, '-');
 
-          const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
+        const fileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
 
-          await new Promise((resolve) => {
-            cloudinary.uploader.upload_stream(
-              {
-                folder: `${item.location}/${dateStr}`,
-                public_id: customFileName,
-                overwrite: true
-              },
-              (err, result) => {
-                if (err) {
-                  console.error("❌ upload fail:", err);
-                  return resolve();
-                }
-
+        await new Promise((resolve) => {
+          cloudinary.uploader.upload_stream(
+            {
+              folder: `${item.location}/${dateStr}`,
+              public_id: fileName,
+              overwrite: true
+            },
+            (err) => {
+              if (!err) {
                 count++;
                 const key = `${item.location}/${dateStr}`;
                 summary[key] = (summary[key] || 0) + 1;
-
-                resolve();
               }
-            ).end(item.bufferData);
-          });
-
-        } catch (err) {
-          console.error("❌ error:", err);
-        }
+              resolve();
+            }
+          ).end(item.bufferData);
+        });
       }
 
       state.buffer = [];
 
-      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
+      let replyText = `✅ บันทึก ${count} รูป\n\n`;
 
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
 
-      if (count === 0) {
-        replyText = "⚠️ ไม่มีรูปที่บันทึกได้";
-      }
+      if (count === 0) replyText = "⚠️ ไม่มีรูป";
 
       return reply(event.replyToken, replyText);
     }
@@ -189,28 +167,20 @@ async function handleEvent(event) {
 
 /* ================= CACHE IMAGE ================= */
 async function cacheImage(item) {
-  let retries = 3;
+  try {
+    const stream = await client.getMessageContent(item.id);
+    const chunks = [];
 
-  while (retries > 0) {
-    try {
-      const stream = await client.getMessageContent(item.id);
-      const chunks = [];
-
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-
-      item.bufferData = Buffer.concat(chunks);
-      console.log("✅ cached:", item.id);
-      return;
-
-    } catch (err) {
-      retries--;
-      console.log("🔁 retry cache...");
+    for await (const chunk of stream) {
+      chunks.push(chunk);
     }
-  }
 
-  console.log("❌ cache failed:", item.id);
+    item.bufferData = Buffer.concat(chunks);
+
+    console.log("✅ cached:", item.id);
+  } catch (err) {
+    console.log("❌ cache fail:", item.id);
+  }
 }
 
 /* ================= REPLY ================= */
@@ -222,6 +192,4 @@ function reply(token, text) {
 }
 
 /* ================= START ================= */
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot running (no-loss FINAL)');
-});
+app.listen(process.env.PORT || 3000);
