@@ -86,21 +86,24 @@ async function handleEvent(event) {
     const loc = extractLocation(text);
 
     /* ===== SET LOCATION (Assign ให้ทุกภาพที่ยังไม่มี) ===== */
-    if (loc) {
-      console.log("📍 location detected:", loc);
+if (loc) {
+  console.log("📍 location detected:", loc);
 
-      let assigned = 0;
+  // ⏳ รอให้รูปเข้าครบก่อน (สำคัญมาก)
+  await new Promise(r => setTimeout(r, 1500));
 
-      for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-          assigned++;
-        }
-      }
+  let assigned = 0;
 
-      console.log(`✅ assigned ${assigned} images to ${loc}`);
-      return reply(event.replyToken, `📍 ตั้งค่า ${loc} ให้ ${assigned} รูป`);
+  for (let item of state.buffer) {
+    if (!item.location) {
+      item.location = loc;
+      assigned++;
     }
+  }
+
+  console.log(`✅ assigned ${assigned} images to ${loc}`);
+  return reply(event.replyToken, `📍 ตั้งค่า ${loc} ให้ ${assigned} รูป`);
+}
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
