@@ -24,7 +24,7 @@ const groupState = {};
 
 /* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot running (ultimate stable)');
+  res.send('🟢 Bot running (no-loss version)');
 });
 
 /* ================= WEBHOOK ================= */
@@ -68,13 +68,21 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    state.buffer.push({
+    console.log("📸 receive & cache image");
+
+    const item = {
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
-    });
+      location: null,
+      bufferData: null
+    };
 
+    state.buffer.push(item);
     state.lastImageTime = Date.now();
+
+    // 🔥 โหลดรูปทันที (สำคัญที่สุด)
+    cacheImage(item);
+
     return;
   }
 
@@ -87,7 +95,7 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 location:", loc);
 
-      // ⏳ รอจนรูปหยุดเข้า
+      // รอรูปเข้าครบ
       while (Date.now() - state.lastImageTime < 1500) {
         await new Promise(r => setTimeout(r, 300));
       }
@@ -112,88 +120,53 @@ async function handleEvent(event) {
       let count = 0;
       const summary = {};
 
-      const concurrency = 2; // 🔥 สำคัญมาก (อย่าเกิน 3)
-
-      async function uploadOne(item) {
-        if (!item.location) return null;
-
-        let retries = 3;
-
-        while (retries > 0) {
-          try {
-            // ⏳ หน่วงกัน timeout
-            await new Promise(r => setTimeout(r, 300));
-
-            const stream = await client.getMessageContent(item.id);
-            const chunks = [];
-
-            for await (const chunk of stream) {
-              chunks.push(chunk);
-            }
-
-            const buffer = Buffer.concat(chunks);
-
-            const dateObj = new Date(item.timestamp);
-
-            const dateStr = dateObj.toLocaleDateString('sv-SE', {
-              timeZone: 'Asia/Bangkok'
-            });
-
-            const timeStr = dateObj.toLocaleTimeString('th-TH', {
-              timeZone: 'Asia/Bangkok',
-              hour12: false,
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit'
-            }).replace(/:/g, '-');
-
-            const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
-
-            return await new Promise((resolve) => {
-              cloudinary.uploader.upload_stream(
-                {
-                  folder: `${item.location}/${dateStr}`,
-                  public_id: customFileName,
-                  overwrite: true
-                },
-                (err, result) => {
-                  if (err) {
-                    console.error("❌ upload fail:", err);
-                    return resolve(null);
-                  }
-
-                  resolve({
-                    location: item.location,
-                    date: dateStr
-                  });
-                }
-              ).end(buffer);
-            });
-
-          } catch (err) {
-            retries--;
-            console.error(`🔁 retry ${3 - retries} for`, item.id);
-
-            if (retries === 0) {
-              console.error("❌ final fail:", item.id);
-              return null;
-            }
-          }
+      for (let item of state.buffer) {
+        if (!item.location || !item.bufferData) {
+          console.log("⚠️ skip:", item.id);
+          continue;
         }
-      }
 
-      // 🔁 upload แบบ batch (กันพัง)
-      for (let i = 0; i < state.buffer.length; i += concurrency) {
-        const chunk = state.buffer.slice(i, i + concurrency);
+        try {
+          const dateObj = new Date(item.timestamp);
 
-        const results = await Promise.all(chunk.map(uploadOne));
+          const dateStr = dateObj.toLocaleDateString('sv-SE', {
+            timeZone: 'Asia/Bangkok'
+          });
 
-        for (let res of results) {
-          if (!res) continue;
+          const timeStr = dateObj.toLocaleTimeString('th-TH', {
+            timeZone: 'Asia/Bangkok',
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+          }).replace(/:/g, '-');
 
-          count++;
-          const key = `${res.location}/${res.date}`;
-          summary[key] = (summary[key] || 0) + 1;
+          const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
+
+          await new Promise((resolve) => {
+            cloudinary.uploader.upload_stream(
+              {
+                folder: `${item.location}/${dateStr}`,
+                public_id: customFileName,
+                overwrite: true
+              },
+              (err, result) => {
+                if (err) {
+                  console.error("❌ upload fail:", err);
+                  return resolve();
+                }
+
+                count++;
+                const key = `${item.location}/${dateStr}`;
+                summary[key] = (summary[key] || 0) + 1;
+
+                resolve();
+              }
+            ).end(item.bufferData);
+          });
+
+        } catch (err) {
+          console.error("❌ error:", err);
         }
       }
 
@@ -214,6 +187,32 @@ async function handleEvent(event) {
   }
 }
 
+/* ================= CACHE IMAGE ================= */
+async function cacheImage(item) {
+  let retries = 3;
+
+  while (retries > 0) {
+    try {
+      const stream = await client.getMessageContent(item.id);
+      const chunks = [];
+
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      item.bufferData = Buffer.concat(chunks);
+      console.log("✅ cached:", item.id);
+      return;
+
+    } catch (err) {
+      retries--;
+      console.log("🔁 retry cache...");
+    }
+  }
+
+  console.log("❌ cache failed:", item.id);
+}
+
 /* ================= REPLY ================= */
 function reply(token, text) {
   return client.replyMessage(token, {
@@ -224,5 +223,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot running (ultimate fixed)');
+  console.log('🚀 Bot running (no-loss FINAL)');
 });
