@@ -38,13 +38,11 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION (แก้ไขให้ยืดหยุ่นขึ้น) ================= */
+/* ================= LOCATION ================= */
 function extractLocation(text) {
-  // ดึงคำแรกที่ตามหลังคำว่า location หรือ แปลง (เช่น "Location A : 11:05" จะได้ "A")
   let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  // ถ้าส่งมาแค่ตัวอักษรเดียวโดดๆ เช่น "A" หรือ "B1"
   if (/^[a-z0-9]+$/i.test(text.trim())) return text.trim().toUpperCase();
 
   return null;
@@ -61,8 +59,7 @@ async function handleEvent(event) {
 
   if (!groupState[groupId]) {
     groupState[groupId] = {
-      buffer: [],
-      currentLocation: null
+      buffer: []
     };
   }
 
@@ -71,11 +68,13 @@ async function handleEvent(event) {
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
     console.log("📸 image received");
+
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
+      location: null // ❗ รอ assign ทีหลัง
     });
+
     return;
   }
 
@@ -86,21 +85,24 @@ async function handleEvent(event) {
 
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION ===== */
+    /* ===== SET LOCATION (Assign ให้ทุกภาพที่ยังไม่มี) ===== */
     if (loc) {
       console.log("📍 location detected:", loc);
-      state.currentLocation = loc;
 
-	// หา "รูปล่าสุดที่ยังไม่มี location"
-	const lastImage = [...state.buffer].reverse().find(item => !item.location);
+      let assigned = 0;
 
-	if (lastImage) {
-	  lastImage.location = loc;
-	}
-      return;
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+          assigned++;
+        }
+      }
+
+      console.log(`✅ assigned ${assigned} images to ${loc}`);
+      return reply(event.replyToken, `📍 ตั้งค่า ${loc} ให้ ${assigned} รูป`);
     }
 
-    /* ===== SAVE (แก้ไขการตั้งชื่อไฟล์) ===== */
+    /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
@@ -110,24 +112,34 @@ async function handleEvent(event) {
       const summary = {};
 
       for (let item of state.buffer) {
-        if (!item.location) continue;
+        if (!item.location) {
+          console.log("⚠️ skipped no location:", item.id);
+          continue;
+        }
 
-        // จัดการเรื่องวันที่และเวลา (เวลาไทย ICT)
         const dateObj = new Date(item.timestamp);
-        const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }); // YYYY-MM-DD
-	const timeStr = dateObj.toLocaleTimeString('th-TH', { 
-  	  timeZone: 'Asia/Bangkok', 
-	   hour12: false, 
-	   hour: '2-digit', 
- 	   minute: '2-digit', 
-	   second: '2-digit' 
-	}).replace(/:/g, '-');
 
-        // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น Location_A_2024-05-22_Time-11-05-00 )
+        const dateStr = dateObj.toLocaleDateString('sv-SE', {
+          timeZone: 'Asia/Bangkok'
+        });
+
+        const timeStr = dateObj.toLocaleTimeString('th-TH', {
+          timeZone: 'Asia/Bangkok',
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        }).replace(/:/g, '-');
+
         const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
 
         try {
-          const res = await saveImage(item.id, item.location, dateStr, customFileName);
+          const res = await saveImage(
+            item.id,
+            item.location,
+            dateStr,
+            customFileName
+          );
 
           if (res) {
             count++;
@@ -139,28 +151,33 @@ async function handleEvent(event) {
         }
       }
 
-      // Reset buffer หลังบันทึกเสร็จ
+      // ล้าง buffer หลังบันทึก
       state.buffer = [];
 
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
+
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
-      
-      if (count === 0) replyText = "⚠️ ไม่พบรูปภาพที่ระบุสถานที่ โปรดส่งรูปแล้วพิมพ์ Location ก่อนกดบันทึก";
+
+      if (count === 0) {
+        replyText = "⚠️ ไม่มีรูปที่มี location";
+      }
 
       return reply(event.replyToken, replyText);
     }
   }
 }
 
-/* ================= SAVE (รองรับชื่อไฟล์ใหม่) ================= */
+/* ================= SAVE ================= */
 async function saveImage(messageId, location, dateStr, customFileName) {
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
+
   for await (const chunk of stream) {
     chunks.push(chunk);
   }
+
   const buffer = Buffer.concat(chunks);
 
   return new Promise((resolve, reject) => {
@@ -188,5 +205,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot is updated and running');
+  console.log('🚀 Bot running (fixed version)');
 });
