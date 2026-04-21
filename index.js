@@ -24,7 +24,7 @@ const groupState = {};
 
 /* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.send('🟢 Bot running (stable)');
+  res.send('🟢 Bot running (ultimate stable)');
 });
 
 /* ================= WEBHOOK ================= */
@@ -74,7 +74,7 @@ async function handleEvent(event) {
       location: null
     });
 
-    state.lastImageTime = Date.now(); // 👈 สำคัญ
+    state.lastImageTime = Date.now();
     return;
   }
 
@@ -87,7 +87,7 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 location:", loc);
 
-      // ⏳ รอจนรูปหยุดเข้าจริง
+      // ⏳ รอจนรูปหยุดเข้า
       while (Date.now() - state.lastImageTime < 1500) {
         await new Promise(r => setTimeout(r, 300));
       }
@@ -109,88 +109,92 @@ async function handleEvent(event) {
       console.log("💾 saving...");
       console.log("📦 buffer:", state.buffer.length);
 
-      const limit = 5; // 👈 ปรับได้ (5-10 ดีสุด)
-      let index = 0;
+      let count = 0;
+      const summary = {};
 
-      async function uploadBatch() {
-        const batch = state.buffer.slice(index, index + limit);
-        index += limit;
-
-        const results = await Promise.all(batch.map(uploadOne));
-        return results;
-      }
+      const concurrency = 2; // 🔥 สำคัญมาก (อย่าเกิน 3)
 
       async function uploadOne(item) {
         if (!item.location) return null;
 
-        try {
-          const stream = await client.getMessageContent(item.id);
-          const chunks = [];
+        let retries = 3;
 
-          for await (const chunk of stream) {
-            chunks.push(chunk);
-          }
+        while (retries > 0) {
+          try {
+            // ⏳ หน่วงกัน timeout
+            await new Promise(r => setTimeout(r, 300));
 
-          const buffer = Buffer.concat(chunks);
+            const stream = await client.getMessageContent(item.id);
+            const chunks = [];
 
-          const dateObj = new Date(item.timestamp);
+            for await (const chunk of stream) {
+              chunks.push(chunk);
+            }
 
-          const dateStr = dateObj.toLocaleDateString('sv-SE', {
-            timeZone: 'Asia/Bangkok'
-          });
+            const buffer = Buffer.concat(chunks);
 
-          const timeStr = dateObj.toLocaleTimeString('th-TH', {
-            timeZone: 'Asia/Bangkok',
-            hour12: false,
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit'
-          }).replace(/:/g, '-');
+            const dateObj = new Date(item.timestamp);
 
-          const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
+            const dateStr = dateObj.toLocaleDateString('sv-SE', {
+              timeZone: 'Asia/Bangkok'
+            });
 
-          return new Promise((resolve) => {
-            cloudinary.uploader.upload_stream(
-              {
-                folder: `${item.location}/${dateStr}`,
-                public_id: customFileName,
-                overwrite: true
-              },
-              (err, result) => {
-                if (err) {
-                  console.error("❌ upload fail:", err);
-                  return resolve(null);
+            const timeStr = dateObj.toLocaleTimeString('th-TH', {
+              timeZone: 'Asia/Bangkok',
+              hour12: false,
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit'
+            }).replace(/:/g, '-');
+
+            const customFileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
+
+            return await new Promise((resolve) => {
+              cloudinary.uploader.upload_stream(
+                {
+                  folder: `${item.location}/${dateStr}`,
+                  public_id: customFileName,
+                  overwrite: true
+                },
+                (err, result) => {
+                  if (err) {
+                    console.error("❌ upload fail:", err);
+                    return resolve(null);
+                  }
+
+                  resolve({
+                    location: item.location,
+                    date: dateStr
+                  });
                 }
-                resolve({
-                  location: item.location,
-                  date: dateStr
-                });
-              }
-            ).end(buffer);
-          });
+              ).end(buffer);
+            });
 
-        } catch (err) {
-          console.error("❌ fetch fail:", err);
-          return null;
+          } catch (err) {
+            retries--;
+            console.error(`🔁 retry ${3 - retries} for`, item.id);
+
+            if (retries === 0) {
+              console.error("❌ final fail:", item.id);
+              return null;
+            }
+          }
         }
       }
 
-      let allResults = [];
+      // 🔁 upload แบบ batch (กันพัง)
+      for (let i = 0; i < state.buffer.length; i += concurrency) {
+        const chunk = state.buffer.slice(i, i + concurrency);
 
-      while (index < state.buffer.length) {
-        const res = await uploadBatch();
-        allResults = allResults.concat(res);
-      }
+        const results = await Promise.all(chunk.map(uploadOne));
 
-      let count = 0;
-      const summary = {};
+        for (let res of results) {
+          if (!res) continue;
 
-      for (let res of allResults) {
-        if (!res) continue;
-
-        count++;
-        const key = `${res.location}/${res.date}`;
-        summary[key] = (summary[key] || 0) + 1;
+          count++;
+          const key = `${res.location}/${res.date}`;
+          summary[key] = (summary[key] || 0) + 1;
+        }
       }
 
       state.buffer = [];
@@ -220,5 +224,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot running (final stable version)');
+  console.log('🚀 Bot running (ultimate fixed)');
 });
