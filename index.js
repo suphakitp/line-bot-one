@@ -70,7 +70,7 @@ async function handleEvent(event) {
     state.buffer.push(item);
     state.lastImageTime = Date.now();
 
-    // 🔥 โหลดรูปทันที
+    // 🔥 โหลดทันที (แต่ยังไม่ await)
     cacheImage(item);
 
     return;
@@ -85,7 +85,7 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 set location:", loc);
 
-      // รอให้รูปเข้าครบก่อน
+      // รอให้รูปเข้าครบ
       while (Date.now() - state.lastImageTime < 1500) {
         await new Promise(r => setTimeout(r, 300));
       }
@@ -105,6 +105,25 @@ async function handleEvent(event) {
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
+
+      // 🔥 สำคัญที่สุด: รอให้ cache เสร็จ
+      let waitTime = 0;
+
+      while (true) {
+        const notReady = state.buffer.filter(item => !item.bufferData);
+
+        if (notReady.length === 0) break;
+
+        if (waitTime > 10000) {
+          console.log("⚠️ cache timeout");
+          break;
+        }
+
+        console.log(`⏳ waiting cache... (${notReady.length} รูป)`);
+
+        await new Promise(r => setTimeout(r, 300));
+        waitTime += 300;
+      }
 
       let count = 0;
       const summary = {};
@@ -167,20 +186,28 @@ async function handleEvent(event) {
 
 /* ================= CACHE IMAGE ================= */
 async function cacheImage(item) {
-  try {
-    const stream = await client.getMessageContent(item.id);
-    const chunks = [];
+  let retries = 3;
 
-    for await (const chunk of stream) {
-      chunks.push(chunk);
+  while (retries > 0) {
+    try {
+      const stream = await client.getMessageContent(item.id);
+      const chunks = [];
+
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      item.bufferData = Buffer.concat(chunks);
+      console.log("✅ cached:", item.id);
+      return;
+
+    } catch (err) {
+      retries--;
+      console.log("🔁 retry cache...");
     }
-
-    item.bufferData = Buffer.concat(chunks);
-
-    console.log("✅ cached:", item.id);
-  } catch (err) {
-    console.log("❌ cache fail:", item.id);
   }
+
+  console.log("❌ cache fail:", item.id);
 }
 
 /* ================= REPLY ================= */
