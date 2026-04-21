@@ -91,11 +91,12 @@ async function handleEvent(event) {
       console.log("📍 location detected:", loc);
       state.currentLocation = loc;
 
-      for (let item of state.buffer) {
-        if (!item.location) {
-          item.location = loc;
-        }
-      }
+	// หา "รูปล่าสุดที่ยังไม่มี location"
+	const lastImage = [...state.buffer].reverse().find(item => !item.location);
+
+	if (lastImage) {
+	  lastImage.location = loc;
+	}
       return;
     }
 
@@ -114,13 +115,13 @@ async function handleEvent(event) {
         // จัดการเรื่องวันที่และเวลา (เวลาไทย ICT)
         const dateObj = new Date(item.timestamp);
         const dateStr = dateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' }); // YYYY-MM-DD
-        const timeStr = dateObj.toLocaleTimeString('th-TH', { 
-            timeZone: 'Asia/Bangkok', 
-            hour12: false, 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit' 
-        }).replace(/:/g, '-');
+	const timeStr = 'Location_' + item.location + '_Time-' + dateObj.toLocaleTimeString('th-TH', { 
+    	timeZone: 'Asia/Bangkok', 
+  	hour12: false, 
+  	hour: '2-digit', 
+   	minute: '2-digit', 
+   	second: '2-digit' 
+	}).replace(/:/g, '-');
 
         // ชื่อไฟล์: สถานที่_วันที่_เวลา (เช่น A_2024-05-22_11-05-00)
         const customFileName = `${item.location}_${dateStr}_${timeStr}`;
