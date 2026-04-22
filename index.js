@@ -22,6 +22,11 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
+/* ================= HEALTH CHECK (สำคัญมาก) ================= */
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
+
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   await Promise.all(req.body.events.map(handleEvent));
@@ -65,7 +70,7 @@ async function handleEvent(event) {
       timestamp: event.timestamp,
       location: null,
       bufferData: null,
-      isLoading: true // 🔥 ตัวสำคัญ
+      isLoading: true
     };
 
     state.buffer.push(item);
@@ -85,9 +90,16 @@ async function handleEvent(event) {
     if (loc) {
       console.log("📍 set location:", loc);
 
-      // รอให้รูปเข้าครบก่อน
-      while (Date.now() - state.lastImageTime < 1500) {
+      // รอให้รูปหยุดเข้าจริง
+      let idle = 0;
+      while (true) {
+        const diff = Date.now() - state.lastImageTime;
+        if (diff > 2000) break;
+
         await new Promise(r => setTimeout(r, 300));
+        idle += 300;
+
+        if (idle > 10000) break;
       }
 
       let assigned = 0;
@@ -106,7 +118,7 @@ async function handleEvent(event) {
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
-      // 🔥 รอจนโหลดครบจริง (ใช้ isLoading)
+      // 🔥 รอ cache ให้ครบจริง
       let waitTime = 0;
 
       while (true) {
@@ -198,7 +210,7 @@ async function cacheImage(item) {
       }
 
       item.bufferData = Buffer.concat(chunks);
-      item.isLoading = false; // 🔥 สำคัญสุด
+      item.isLoading = false;
 
       console.log("✅ cached:", item.id);
       return;
