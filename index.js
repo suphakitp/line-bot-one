@@ -144,8 +144,13 @@ async function handleEvent(event) {
 /* ================= SAVE TO CLOUDINARY ================= */
 async function saveImage(messageId, location, dateStr, timestamp) {
   const thaiTime = new Date(timestamp + (7 * 60 * 60 * 1000));
+
   const datePart = thaiTime.toISOString().split('T')[0];
-  const timePart = thaiTime.toISOString().split('T')[1].substring(0, 5).replace(/:/g, '-');
+
+  const hours = String(thaiTime.getHours()).padStart(2, '0');
+  const minutes = String(thaiTime.getMinutes()).padStart(2, '0');
+
+  const timePart = `${hours}-${minutes}`;  // ✅ ไม่มีวินาที
 
   const finalFileName = `Loc_${location}_${datePart}_${timePart}_${messageId.slice(-4)}`;
 
