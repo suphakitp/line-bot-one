@@ -148,11 +148,12 @@ async function saveImage(messageId, location, dateStr, timestamp) {
   const datePart = thaiTime.toISOString().split('T')[0];
 
   const hours = String(thaiTime.getHours()).padStart(2, '0');
-  const minutes = String(thaiTime.getMinutes()).padStart(2, '0');
+const minutes = String(thaiTime.getMinutes()).padStart(2, '0');
 
-  const timePart = `${hours}-${minutes}`;  // ✅ ไม่มีวินาที
+const timePart = `${hours}-${minutes}`;
 
-  const finalFileName = `Loc_${location}_${datePart}_${timePart}_${messageId.slice(-4)}`;
+// 🔥 แก้ตรงนี้
+const finalFileName = `Loc ${location} ${datePart}_Time ${timePart}`;
 
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
