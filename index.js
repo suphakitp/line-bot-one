@@ -5,7 +5,6 @@ const cloudinary = require('cloudinary').v2;
 
 const app = express();
 
-/* ================= CONFIG ================= */
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET
@@ -22,12 +21,10 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
   res.send('🟢 Bot is running');
 });
 
-/* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
@@ -38,7 +35,7 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= LOCATION ================= */
+/* ================= LOCATION EXTRACTOR ================= */
 function extractLocation(text) {
   text = text.replace(/[^\w\s:]/g, '').trim();
   let match = text.match(/location\s*([a-z0-9]+)/i);
@@ -49,55 +46,69 @@ function extractLocation(text) {
   return null;
 }
 
-/* ================= MAIN ================= */
+/* ================= MAIN LOGIC ================= */
 async function handleEvent(event) {
   if (event.type !== 'message') return;
 
   const groupId = event.source.groupId || event.source.roomId || event.source.userId;
 
+  // สร้าง State ถ้ายังไม่มี
   if (!groupState[groupId]) {
     groupState[groupId] = {
       buffer: [],
-      currentLocation: null
+      lastLocation: null // 🔥 เก็บโลเคชั่นล่าสุดที่เคยพิมพ์ไว้
     };
   }
 
   const state = groupState[groupId];
 
+  /* ===== 1. ถ้าเป็น IMAGE ===== */
   if (event.message.type === 'image') {
+    console.log("📸 image received");
     state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null
+      // 🔥 ถ้ารู้โลเคชั่นอยู่แล้ว (เคยพิมพ์ทิ้งไว้) ให้ใส่ไปเลย
+      location: state.lastLocation 
     });
     return;
   }
 
+  /* ===== 2. ถ้าเป็น TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
     const loc = extractLocation(text);
 
+    // --- กรณีพิมพ์โลเคชั่นใหม่เข้ามา ---
     if (loc) {
-      state.currentLocation = loc;
+      console.log("📍 New location set:", loc);
+      state.lastLocation = loc; // อัปเดตโลเคชั่นล่าสุด
+
+      // ไล่ใส่โลเคชั่นให้รูปภาพที่ค้างอยู่ใน Buffer (กรณีส่งรูปก่อนพิมพ์โลเคชั่น)
       for (let item of state.buffer) {
         if (!item.location) item.location = loc;
       }
       return;
     }
 
+    // --- กรณีสั่งบันทึกรูปภาพ ---
     if (text === 'บันทึกรูปภาพ') {
-      console.log("💾 saving...");
-      await new Promise(r => setTimeout(r, 1500));
+      if (state.buffer.length === 0) {
+        return reply(event.replyToken, "⚠️ ไม่มีรูปภาพที่รอการบันทึก");
+      }
+
+      console.log("💾 saving images...");
+      await new Promise(r => setTimeout(r, 1000));
 
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
+        // ถ้ารูปไหนไม่มีโลเคชั่น (ยังไม่ได้พิมพ์บอก) ให้ข้ามไป
         if (!item.location) continue;
 
         const dateStr = new Date(item.timestamp + (7 * 60 * 60 * 1000))
-          .toISOString()
-          .split('T')[0];
+          .toISOString().split('T')[0];
 
         try {
           const res = await saveImage(item.id, item.location, dateStr, item.timestamp);
@@ -111,27 +122,32 @@ async function handleEvent(event) {
         }
       }
 
+      // หลังบันทึกเสร็จ เคลียร์แค่รูปภาพ แต่ยังจำ lastLocation ไว้เหมือนเดิม
       state.buffer = [];
+
+      if (count === 0) {
+        return reply(event.replyToken, "⚠️ ไม่สามารถบันทึกได้ (กรุณาระบุโลเคชั่นก่อน)");
+      }
+
       let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
       return reply(event.replyToken, replyText);
     }
+    
+    // 🔥 ถ้าพิมพ์ข้อความอื่นๆ บอทจะไม่ทำอะไร (แต่จะไม่ทำลาย Buffer เดิม)
+    console.log("💬 Other text:", text);
   }
 }
 
-/* ================= SAVE (ตัดวินาทีออก) ================= */
+/* ================= SAVE IMAGE ================= */
 async function saveImage(messageId, location, dateStr, timestamp) {
   const thaiTime = new Date(timestamp + (7 * 60 * 60 * 1000));
-  const isoString = thaiTime.toISOString(); // "2026-04-22T09:29:42.000Z"
+  const isoString = thaiTime.toISOString();
+  const datePart = isoString.split('T')[0];
+  const timePart = isoString.split('T')[1].substring(0, 5).replace(/:/g, '-');
 
-  const datePart = isoString.split('T')[0]; // "2026-04-22"
-  
-  // ตัดวินาทีออก: เอาเฉพาะ HH:mm
-  const timePart = isoString.split('T')[1].substring(0, 5).replace(/:/g, '-'); // "09-29"
-
-  // รูปแบบ: Location A 2026-04-22_Time 09-29_ID
   const finalFileName = `Location ${location} ${datePart}_Time ${timePart}_${messageId.slice(-4)}`;
 
   const stream = await client.getMessageContent(messageId);
@@ -158,12 +174,9 @@ async function saveImage(messageId, location, dateStr, timestamp) {
 }
 
 function reply(token, text) {
-  return client.replyMessage(token, {
-    type: 'text',
-    text
-  });
+  return client.replyMessage(token, { type: 'text', text });
 }
 
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server is running (No Seconds in Filename)');
+  console.log('🚀 Server is running (Improved Location Persistence)');
 });
