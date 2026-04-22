@@ -64,7 +64,6 @@ async function handleEvent(event) {
 
   const state = groupState[groupId];
 
-  /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
     state.buffer.push({
       id: event.message.id,
@@ -74,7 +73,6 @@ async function handleEvent(event) {
     return;
   }
 
-  /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
     const loc = extractLocation(text);
@@ -87,7 +85,6 @@ async function handleEvent(event) {
       return;
     }
 
-    /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
       await new Promise(r => setTimeout(r, 1500));
@@ -98,15 +95,12 @@ async function handleEvent(event) {
       for (let item of state.buffer) {
         if (!item.location) continue;
 
-        // โฟลเดอร์วันที่
         const dateStr = new Date(item.timestamp + (7 * 60 * 60 * 1000))
           .toISOString()
           .split('T')[0];
 
         try {
-          // 🔥 ส่งข้อมูลที่จำเป็นเข้าไปเพื่อตั้งชื่อไฟล์ตามรูปแบบที่ต้องการ
           const res = await saveImage(item.id, item.location, dateStr, item.timestamp);
-
           if (res) {
             count++;
             const key = `${item.location}/${dateStr}`;
@@ -127,20 +121,17 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE (แก้ไขใหม่ตามรูปแบบที่ต้องการ) ================= */
+/* ================= SAVE (ตัดวินาทีออก) ================= */
 async function saveImage(messageId, location, dateStr, timestamp) {
-  console.log("⬆️ upload:", messageId);
-
-  // 1. จัดการเวลาไทย (GMT+7)
   const thaiTime = new Date(timestamp + (7 * 60 * 60 * 1000));
-  const isoString = thaiTime.toISOString(); // ตัวอย่าง: "2026-04-22T09:29:42.000Z"
+  const isoString = thaiTime.toISOString(); // "2026-04-22T09:29:42.000Z"
 
-  // 2. แยกส่วน วันที่ และ เวลา
   const datePart = isoString.split('T')[0]; // "2026-04-22"
-  const timePart = isoString.split('T')[1].split('.')[0].replace(/:/g, '-'); // "09-29-42"
+  
+  // ตัดวินาทีออก: เอาเฉพาะ HH:mm
+  const timePart = isoString.split('T')[1].substring(0, 5).replace(/:/g, '-'); // "09-29"
 
-  // 3. สร้างชื่อไฟล์ตามรูปแบบ: Location A 2026-04-22_Time 09-29-42
-  // และต่อท้ายด้วย Message ID 4 ตัวท้ายเพื่อกันชื่อซ้ำกรณีส่งพร้อมกันในวินาทีเดียว
+  // รูปแบบ: Location A 2026-04-22_Time 09-29_ID
   const finalFileName = `Location ${location} ${datePart}_Time ${timePart}_${messageId.slice(-4)}`;
 
   const stream = await client.getMessageContent(messageId);
@@ -166,7 +157,6 @@ async function saveImage(messageId, location, dateStr, timestamp) {
   });
 }
 
-/* ================= REPLY ================= */
 function reply(token, text) {
   return client.replyMessage(token, {
     type: 'text',
@@ -174,7 +164,6 @@ function reply(token, text) {
   });
 }
 
-/* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Bot is running with custom filename format');
+  console.log('🚀 Server is running (No Seconds in Filename)');
 });
