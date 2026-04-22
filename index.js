@@ -22,23 +22,33 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
-/* ================= HEALTH CHECK (สำคัญมาก) ================= */
+/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
-  res.status(200).send('OK');
+  res.send('🟢 Bot is running');
 });
 
 /* ================= WEBHOOK ================= */
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  await Promise.all(req.body.events.map(handleEvent));
-  res.sendStatus(200);
+  try {
+    await Promise.all(req.body.events.map(handleEvent));
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ webhook error:", err);
+    res.sendStatus(500);
+  }
 });
 
 /* ================= LOCATION ================= */
 function extractLocation(text) {
-  let match = text.match(/(?:location|แปลง)\s*([a-z0-9]+)/i);
+  text = text.replace(/[^\w\s:]/g, '').trim();
+
+  let match = text.match(/location\s*([a-z0-9]+)/i);
   if (match) return match[1].toUpperCase();
 
-  if (/^[a-z0-9]+$/i.test(text.trim())) return text.trim().toUpperCase();
+  match = text.match(/แปลง\s*([a-z0-9]+)/i);
+  if (match) return match[1].toUpperCase();
+
+  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
 
   return null;
 }
@@ -55,7 +65,7 @@ async function handleEvent(event) {
   if (!groupState[groupId]) {
     groupState[groupId] = {
       buffer: [],
-      lastImageTime: 0
+      currentLocation: null
     };
   }
 
@@ -63,20 +73,14 @@ async function handleEvent(event) {
 
   /* ===== IMAGE ===== */
   if (event.message.type === 'image') {
-    console.log("📸 receive image");
+    console.log("📸 image");
 
-    const item = {
+    // 🔥 ยังไม่รู้ location → เก็บไว้ก่อน
+    state.buffer.push({
       id: event.message.id,
       timestamp: event.timestamp,
-      location: null,
-      bufferData: null,
-      isLoading: true
-    };
-
-    state.buffer.push(item);
-    state.lastImageTime = Date.now();
-
-    cacheImage(item); // async
+      location: null
+    });
 
     return;
   }
@@ -84,145 +88,105 @@ async function handleEvent(event) {
   /* ===== TEXT ===== */
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
+    console.log("💬", text);
+
     const loc = extractLocation(text);
 
-    /* ===== SET LOCATION ===== */
+    /* ===== LOCATION ===== */
     if (loc) {
-      console.log("📍 set location:", loc);
+      console.log("📍 location:", loc);
 
-      // รอให้รูปหยุดเข้าจริง
-      let idle = 0;
-      while (true) {
-        const diff = Date.now() - state.lastImageTime;
-        if (diff > 2000) break;
+      state.currentLocation = loc;
 
-        await new Promise(r => setTimeout(r, 300));
-        idle += 300;
-
-        if (idle > 10000) break;
-      }
-
-      let assigned = 0;
-
+      // 🔥 assign ย้อนหลังให้รูปที่ยังไม่มี location
       for (let item of state.buffer) {
         if (!item.location) {
           item.location = loc;
-          assigned++;
         }
       }
 
-      return reply(event.replyToken, `📍 ${loc} → ${assigned} รูป`);
+      return;
     }
 
     /* ===== SAVE ===== */
     if (text === 'บันทึกรูปภาพ') {
       console.log("💾 saving...");
 
-      // 🔥 รอ cache ให้ครบจริง
-      let waitTime = 0;
-
-      while (true) {
-        const loading = state.buffer.filter(item => item.isLoading);
-
-        if (loading.length === 0) break;
-
-        if (waitTime > 15000) {
-          console.log("⚠️ cache timeout");
-          break;
-        }
-
-        console.log(`⏳ ยังโหลดไม่เสร็จ ${loading.length} รูป`);
-
-        await new Promise(r => setTimeout(r, 300));
-        waitTime += 300;
-      }
+      // 🔥 กัน event มาช้า
+      await new Promise(r => setTimeout(r, 1500));
 
       let count = 0;
       const summary = {};
 
       for (let item of state.buffer) {
-        if (!item.location || !item.bufferData) {
-          console.log("⚠️ skip:", item.id);
-          continue;
+        if (!item.location) continue;
+
+        const dateStr = new Date(item.timestamp)
+          .toISOString()
+          .split('T')[0];
+
+        try {
+          const res = await saveImage(item.id, item.location, dateStr);
+
+          if (res) {
+            count++;
+
+            const key = `${item.location}/${dateStr}`;
+            summary[key] = (summary[key] || 0) + 1;
+          }
+
+        } catch (err) {
+          console.error("❌ save error:", err);
         }
-
-        const dateObj = new Date(item.timestamp);
-
-        const dateStr = dateObj.toLocaleDateString('sv-SE', {
-          timeZone: 'Asia/Bangkok'
-        });
-
-        const timeStr = dateObj.toLocaleTimeString('th-TH', {
-          timeZone: 'Asia/Bangkok',
-          hour12: false,
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        }).replace(/:/g, '-');
-
-        const fileName = `Location_${item.location}_${dateStr}_Time-${timeStr}`;
-
-        await new Promise((resolve) => {
-          cloudinary.uploader.upload_stream(
-            {
-              folder: `${item.location}/${dateStr}`,
-              public_id: fileName,
-              overwrite: true
-            },
-            (err) => {
-              if (!err) {
-                count++;
-                const key = `${item.location}/${dateStr}`;
-                summary[key] = (summary[key] || 0) + 1;
-              }
-              resolve();
-            }
-          ).end(item.bufferData);
-        });
       }
 
+      // reset
       state.buffer = [];
 
-      let replyText = `✅ บันทึก ${count} รูป\n\n`;
+      // ===== SUMMARY =====
+      let replyText = `✅ บันทึกทั้งหมด ${count} รูป\n\n`;
 
       for (let key in summary) {
         replyText += `📁 ${key} → ${summary[key]} รูป\n`;
       }
-
-      if (count === 0) replyText = "⚠️ ไม่มีรูป";
 
       return reply(event.replyToken, replyText);
     }
   }
 }
 
-/* ================= CACHE IMAGE ================= */
-async function cacheImage(item) {
-  let retries = 3;
+/* ================= SAVE ================= */
+async function saveImage(messageId, location, dateStr) {
+  console.log("⬆️ upload:", messageId, location);
 
-  while (retries > 0) {
-    try {
-      const stream = await client.getMessageContent(item.id);
-      const chunks = [];
+  const stream = await client.getMessageContent(messageId);
 
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-
-      item.bufferData = Buffer.concat(chunks);
-      item.isLoading = false;
-
-      console.log("✅ cached:", item.id);
-      return;
-
-    } catch (err) {
-      retries--;
-      console.log("🔁 retry cache...");
-    }
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
   }
 
-  item.isLoading = false;
-  console.log("❌ cache fail:", item.id);
+  const buffer = Buffer.concat(chunks);
+
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_stream(
+      {
+        folder: `${location}/${dateStr}`,
+        public_id: messageId,
+        overwrite: false
+      },
+      (err, result) => {
+        if (err) {
+          if (err.message && err.message.includes('already exists')) {
+            return resolve(null);
+          }
+          return reject(err);
+        }
+
+        resolve(result);
+      }
+    ).end(buffer);
+  });
 }
 
 /* ================= REPLY ================= */
@@ -235,5 +199,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Bot running (final stable version)");
+  console.log('🚀 Server running FINAL FIXED');
 });
