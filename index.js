@@ -152,8 +152,13 @@ const minutes = String(thaiTime.getMinutes()).padStart(2, '0');
 
 const timePart = `${hours}-${minutes}`;
 
-// 🔥 แก้ตรงนี้
-const finalFileName = `Loc ${location} ${datePart}_Time ${timePart}`;
+
+const cleanLocation = (location || "UNKNOWN")
+  .replace(/^Location\s*/i, "")   // ลบเฉพาะคำว่า Location
+  .replace(/\s+/g, " ")           // จัดช่องว่าง
+  .trim();
+
+const finalFileName = `Loc ${cleanLocation} ${datePart}_Time ${timePart}`;
 
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
