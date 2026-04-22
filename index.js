@@ -29,28 +29,24 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
-/* ================= ฟังก์ชันดึงชื่อโลเคชั่น (Flexible) ================= */
+/* ================= ฟังก์ชันดึงชื่อโลเคชั่น ================= */
 function extractLocation(text) {
   text = text.trim();
-  // ดึงคำหลัง Location หรือ แปลง จนถึงเครื่องหมาย : หรือจบประโยค
   let match = text.match(/(?:Location|แปลง)\s*(.*?)\s*(?::|$)/i);
-  if (match && match[1]) {
-    return match[1].trim(); 
-  }
-  // รองรับพิมพ์แค่ตัวอักษรเดียว (A-Z)
-  if (/^[a-z]$/i.test(text)) {
-    return text.toUpperCase();
-  }
+  if (match && match[1]) return match[1].trim();
+  if (/^[a-z]$/i.test(text)) return text.toUpperCase();
+  // กรณีพิมพ์ชื่อไทยเฉยๆ หรือชื่อเฉพาะ
+  if (text.length > 0 && text.length < 20 && !['บันทึก', 'บันทึกรูปภาพ'].includes(text)) return text;
   return null;
 }
 
-/* ================= ฟังก์ชันบันทึกรูปภาพ (Sequential + Sorted A-Z) ================= */
+/* ================= ฟังก์ชันบันทึกรูปภาพ ================= */
 async function processSaveImages(groupId, state, isAuto = false) {
   if (state.buffer.length === 0) return;
 
   const total = state.buffer.length;
   const pushTarget = groupId;
-  const modeText = isAuto ? "⏰ ระบบบันทึกอัตโนมัติ (ครบ 5 วัน)" : "⏳ กำลังบันทึกรูปภาพ";
+  const modeText = isAuto ? "⏰ ระบบบันทึกอัตโนมัติ" : "⏳ กำลังบันทึกรูปภาพ";
   
   await client.pushMessage(pushTarget, { 
     type: 'text', 
@@ -62,7 +58,8 @@ async function processSaveImages(groupId, state, isAuto = false) {
 
   for (let i = 0; i < state.buffer.length; i++) {
     const item = state.buffer[i];
-    const targetLoc = item.location || state.lastLocation || "UNKNOWN";
+    // ถ้าไม่มีชื่อโลเคชั่น ให้ใช้ UNKNOWN
+    const targetLoc = item.location || "UNKNOWN";
     const dateStr = new Date(item.timestamp + (7 * 60 * 60 * 1000)).toISOString().split('T')[0];
 
     try {
@@ -70,26 +67,21 @@ async function processSaveImages(groupId, state, isAuto = false) {
       count++;
       const key = `${targetLoc}/${dateStr}`;
       summary[key] = (summary[key] || 0) + 1;
-
-      if (count > 0 && count % 20 === 0) {
-        await client.pushMessage(pushTarget, { type: 'text', text: `🔄 บันทึกไปแล้ว ${count}/${total} รูป...` });
-      }
     } catch (err) {
       console.error(`❌ Save error:`, err.message);
     }
   }
 
-  state.buffer = []; // เคลียร์คิว = เริ่มนับ 5 วันใหม่สำหรับรูปถัดไป
+  // ล้างค่าเมื่อบันทึกเสร็จ
+  state.buffer = [];
+  state.lastLocation = null;
 
-  let summaryText = `✅ ${isAuto ? 'บันทึกอัตโนมัติ' : 'บันทึก'} เสร็จสิ้น! ได้ทั้งหมด ${count}/${total} รูป\n`;
-  summaryText += `📅 ระบบเริ่มนับเวลา 5 วันใหม่แล้ว\n\n`;
+  let summaryText = `✅ ${isAuto ? 'บันทึกอัตโนมัติ' : 'บันทึก'} เสร็จสิ้น! (${count}/${total} รูป)\n`;
+  summaryText += `📅 ระบบเริ่มนับรอบใหม่\n\n`;
 
-  if (count > 0) {
-    // 🔥 จัดเรียงสรุปผล A-Z
-    const sortedKeys = Object.keys(summary).sort(); 
-    for (const key of sortedKeys) {
-      summaryText += `📁 ${key} → ${summary[key]} รูป\n`;
-    }
+  const sortedKeys = Object.keys(summary).sort(); 
+  for (const key of sortedKeys) {
+    summaryText += `📁 ${key} → ${summary[key]} รูป\n`;
   }
   
   await client.pushMessage(pushTarget, { type: 'text', text: summaryText });
@@ -105,39 +97,45 @@ async function handleEvent(event) {
   }
   const state = groupState[groupId];
 
-  // 1. 🔥 ตรวจสอบเงื่อนไข 5 วัน (Auto-save)
-  if (state.buffer.length > 0) {
-    const fiveDaysInMs = 5 * 24 * 60 * 60 * 1000;
-    if (Date.now() - state.buffer[0].timestamp >= fiveDaysInMs) {
-      return await processSaveImages(groupId, state, true);
-    }
-  }
-
-  // 2. รับรูปภาพ
+  // 1. รับรูปภาพ (เก็บไว้เฉยๆ ยังไม่ใส่ชื่อ)
   if (event.message.type === 'image') {
     state.buffer.push({ 
       id: event.message.id, 
       timestamp: event.timestamp, 
-      location: state.lastLocation 
+      location: null // บังคับเป็น null เพื่อรอชื่อตามหลัง
     });
     return;
   }
 
-  // 3. รับข้อความ
+  // 2. รับข้อความ
   if (event.message.type === 'text') {
     const text = event.message.text.trim();
-    const loc = extractLocation(text);
-
-    if (loc) {
-      state.lastLocation = loc;
-      for (let item of state.buffer) { if (!item.location) item.location = loc; }
-      return;
-    }
 
     if (text === 'บันทึก' || text === 'บันทึกรูปภาพ') {
       if (state.buffer.length === 0) return reply(event.replyToken, "⚠️ ไม่มีรูปค้างในระบบ");
       await reply(event.replyToken, "👌 รับทราบครับ กำลังเริ่มบันทึก...");
       await processSaveImages(groupId, state, false);
+      return;
+    }
+
+    // ตรวจสอบว่าเป็นชื่อโลเคชั่นหรือไม่
+    const loc = extractLocation(text);
+    if (loc) {
+      let updated = 0;
+      // วิ่งไปเติมชื่อให้รูปที่ยังว่างอยู่ (รูปที่เพิ่งส่งมาก่อนหน้าข้อความนี้)
+      for (let item of state.buffer) {
+        if (!item.location) {
+          item.location = loc;
+          updated++;
+        }
+      }
+      // ถ้าไม่มีรูปว่างเลย (อาจจะพิมพ์ชื่อก่อนส่งรูป) ให้จำค่านี้ไว้เผื่อรูปที่จะตามมา
+      if (updated === 0) {
+        state.lastLocation = loc;
+      } else {
+        // ถ้าเติมชื่อให้รูปเก่าไปแล้ว ให้ล้างค่าจำทิ้ง จะได้ไม่ไปทับรูปชุดถัดไป
+        state.lastLocation = null;
+      }
       return;
     }
   }
@@ -146,11 +144,10 @@ async function handleEvent(event) {
 /* ================= SAVE TO CLOUDINARY ================= */
 async function saveImage(messageId, location, dateStr, timestamp) {
   const thaiTime = new Date(timestamp + (7 * 60 * 60 * 1000));
-  const isoString = thaiTime.toISOString();
-  const datePart = isoString.split('T')[0];
-  const timePart = isoString.split('T')[1].substring(0, 5).replace(/:/g, '-');
+  const datePart = thaiTime.toISOString().split('T')[0];
+  const timePart = thaiTime.toISOString().split('T')[1].substring(0, 5).replace(/:/g, '-');
 
-  const finalFileName = `Location ${location} ${datePart}_Time ${timePart}_${messageId.slice(-4)}`;
+  const finalFileName = `Loc_${location}_${datePart}_${timePart}_${messageId.slice(-4)}`;
 
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
@@ -159,7 +156,12 @@ async function saveImage(messageId, location, dateStr, timestamp) {
 
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload_stream(
-      { folder: `${location}/${dateStr}`, public_id: finalFileName, overwrite: true, resource_type: "image" },
+      { 
+        folder: `${location}/${dateStr}`, 
+        public_id: finalFileName, 
+        overwrite: true, 
+        resource_type: "image" 
+      },
       (err, result) => { if (err) return reject(err); resolve(result); }
     ).end(buffer);
   });
@@ -167,4 +169,4 @@ async function saveImage(messageId, location, dateStr, timestamp) {
 
 function reply(token, text) { return client.replyMessage(token, { type: 'text', text }); }
 
-app.listen(process.env.PORT || 3000, () => console.log('🚀 Hybrid Bot Ready (Sorted + Flexible Location)'));
+app.listen(process.env.PORT || 3000, () => console.log('🚀 Ready: Photo-First Mode'));
