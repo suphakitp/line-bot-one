@@ -60,7 +60,7 @@ async function processSaveImages(groupId, state, isAuto = false) {
     const item = state.buffer[i];
     // ถ้าไม่มีชื่อโลเคชั่น ให้ใช้ UNKNOWN
     const targetLoc = item.location || "UNKNOWN";
-    const dateStr = new Date(item.timestamp + (7 * 60 * 60 * 1000)).toISOString().split('T')[0];
+    const dateStr = new Date(item.timestamp + (7 * 60 * 60 )).toISOString().split('T')[0];
 
     try {
       await saveImage(item.id, targetLoc, dateStr, item.timestamp);
