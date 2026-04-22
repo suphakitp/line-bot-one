@@ -68,7 +68,7 @@ async function handleEvent(event) {
   if (event.message.type === 'image') {
     state.buffer.push({
       id: event.message.id,
-      timestamp: event.timestamp, // เก็บเวลาที่ส่งภาพไว้
+      timestamp: event.timestamp,
       location: null
     });
     return;
@@ -98,13 +98,13 @@ async function handleEvent(event) {
       for (let item of state.buffer) {
         if (!item.location) continue;
 
-        // แยกโฟลเดอร์ตามวันที่
+        // โฟลเดอร์วันที่
         const dateStr = new Date(item.timestamp + (7 * 60 * 60 * 1000))
           .toISOString()
           .split('T')[0];
 
         try {
-          // 🔥 ส่ง item.timestamp เข้าไปเพื่อใช้ตั้งชื่อไฟล์
+          // 🔥 ส่งข้อมูลที่จำเป็นเข้าไปเพื่อตั้งชื่อไฟล์ตามรูปแบบที่ต้องการ
           const res = await saveImage(item.id, item.location, dateStr, item.timestamp);
 
           if (res) {
@@ -127,21 +127,21 @@ async function handleEvent(event) {
   }
 }
 
-/* ================= SAVE (UPDATED) ================= */
+/* ================= SAVE (แก้ไขใหม่ตามรูปแบบที่ต้องการ) ================= */
 async function saveImage(messageId, location, dateStr, timestamp) {
   console.log("⬆️ upload:", messageId);
 
-  // 1. จัดการเวลาให้เป็น Timezone ไทย (GMT+7)
+  // 1. จัดการเวลาไทย (GMT+7)
   const thaiTime = new Date(timestamp + (7 * 60 * 60 * 1000));
-  
-  // 2. สร้างชื่อไฟล์: YYYY-MM-DD_HH-mm-ss (เช่น 2026-04-22_14-30-05)
-  const timeName = thaiTime.toISOString()
-    .replace(/T/, '_')      // เปลี่ยน T เป็น _
-    .replace(/\..+/, '')    // ตัดเสี้ยววินาทีออก
-    .replace(/:/g, '-');    // เปลี่ยน : เป็น - เพื่อความปลอดภัยของชื่อไฟล์
+  const isoString = thaiTime.toISOString(); // ตัวอย่าง: "2026-04-22T09:29:42.000Z"
 
-  // 3. ป้องกันชื่อซ้ำ (กรณีส่งหลายรูปในวินาทีเดียว) โดยการต่อท้ายด้วย 4 ตัวท้ายของ Message ID
-  const finalFileName = `${timeName}_${messageId.slice(-4)}`;
+  // 2. แยกส่วน วันที่ และ เวลา
+  const datePart = isoString.split('T')[0]; // "2026-04-22"
+  const timePart = isoString.split('T')[1].split('.')[0].replace(/:/g, '-'); // "09-29-42"
+
+  // 3. สร้างชื่อไฟล์ตามรูปแบบ: Location A 2026-04-22_Time 09-29-42
+  // และต่อท้ายด้วย Message ID 4 ตัวท้ายเพื่อกันชื่อซ้ำกรณีส่งพร้อมกันในวินาทีเดียว
+  const finalFileName = `Location ${location} ${datePart}_Time ${timePart}_${messageId.slice(-4)}`;
 
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
@@ -154,7 +154,7 @@ async function saveImage(messageId, location, dateStr, timestamp) {
     cloudinary.uploader.upload_stream(
       {
         folder: `${location}/${dateStr}`,
-        public_id: finalFileName, // ใช้ชื่อไฟล์ที่เราสร้างตามวันเวลา
+        public_id: finalFileName, 
         overwrite: true,
         resource_type: "image"
       },
@@ -176,5 +176,5 @@ function reply(token, text) {
 
 /* ================= START ================= */
 app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server is running with Date-Time Filename support');
+  console.log('🚀 Bot is running with custom filename format');
 });
