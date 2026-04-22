@@ -19,6 +19,10 @@ cloudinary.config({
 /* ================= MEMORY ================= */
 const groupState = {};
 
+app.get('/', (req, res) => {
+  res.status(200).send('OK');
+});
+
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
